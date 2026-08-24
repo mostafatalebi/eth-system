@@ -1,0 +1,27 @@
+[package]
+name = "eth_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+alloy = { version="2.1.1", features = ["provider-ws", "k256", "signer-local"] }
+axum = { version = "0.8.9", features = ["macros"] }
+chrono = {  version="0.4.45", features = ["serde"] }
+clap = { version="4.6.6" , features = ["derive"]}
+dotenvy = "0.15.7"
+envy = "0.4.2"
+postgres = "0.19.14"
+refinery = "0.9.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = {  version="1.0.151", features = ["std"] }
+tokio = { version="1.53.1", features = ["full"] }
+tokio-postgres = "0.7.18"
+validator = { version = "0.21.0", features = ["derive"] }
+futures-util = "0.3.33"
+tracing = "0.1.44"
+revm = { version = "42.0.1", features = ["alloydb"] }
+flume = "0.12.0"
+humantime = "2.4.0"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+redb = "4.2.0"
+time = "0.3.55"
