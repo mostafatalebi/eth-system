@@ -1,12 +1,15 @@
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::Hash;
+use std::ops::Index;
 use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
 use alloy::network::TransactionResponse;
 use alloy::primitives::B256;
 use redb::{Database, TableDefinition};
 use revm::context::TxEnv;
 use revm::primitives::U256;
+use tokio_postgres::types::IsNull::No;
 use tracing::error;
 use crate::db::models::TransactionModel;
 use crate::error::AppErr;
@@ -16,18 +19,24 @@ pub trait AppStorage: Send + Sync + 'static {
     // @todo later we need to set a write id for its return type
     fn insert_transaction(&self, tx: TransactionModel) -> Result<(),AppErr>;
     fn get_transaction(&self, tx: B256) -> Result<Option<TransactionModel>,AppErr>;
+
+    fn get_list(&self) -> Result<Option<Vec<B256>>,AppErr>;
 }
 
 
 
 
 pub struct InMemoryStorage {
+    serial:  AtomicU64,
+    indexes: RwLock<BTreeMap<u64, B256>>,
     storage: RwLock<HashMap<B256, TransactionModel>>
 }
 
 impl InMemoryStorage {
     pub fn new() -> Self {
         Self {
+            serial: AtomicU64::new(0),
+            indexes: RwLock::new(BTreeMap::new()),
             storage: RwLock::new(HashMap::new())
         }
     }
@@ -39,7 +48,10 @@ impl AppStorage for InMemoryStorage {
         if s.contains_key(&tx.tx.tx_hash()) {
             return Err(AppErr::StorageErrorHashExists(format!("hash={:?}", tx.tx.tx_hash())))
         }
-        s.insert(tx.tx.tx_hash(), tx);
+        let hash = tx.tx.tx_hash();
+        s.insert(hash, tx);
+        self.indexes.write().unwrap().insert(self.serial.load(Ordering::Relaxed), hash);
+        self.serial.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -48,6 +60,19 @@ impl AppStorage for InMemoryStorage {
         let item = s.get(&tx);
 
         Ok(Some(item.unwrap().clone()))
+    }
+
+    fn get_list(&self) -> Result<Option<Vec<B256>>,AppErr> {
+        if self.serial.load(Ordering::Relaxed) == 0 {
+            return Ok(None)
+        }
+        let mut response_list: Vec<B256> = Vec::new();
+        let s = self.storage.read().unwrap();
+        let mut i = 1;
+        for (_, v) in self.indexes.read().unwrap().iter() {
+            response_list.push(v.clone())
+        }
+        return Ok(Some(response_list))
     }
 }
 
