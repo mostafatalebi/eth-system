@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: reth-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reth
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reth
+  template:
+    metadata:
+      labels:
+        app: reth
+    spec:
+      containers:
+        - name: reth
+          image: ghcr.io/paradigmxyz/reth:latest
+          args:
+            - node
+            - --dev
+            - --http
+            - --http.addr
+            - 0.0.0.0
+            - --http.port
+            - "8545"
+            - --ws
+            - --ws.addr
+            - 0.0.0.0
+            - --ws.port
+            - "8546"
+          ports:
+            - name: http
+              containerPort: 8545
+            - name: ws
+              containerPort: 8546
+          volumeMounts:
+            - name: reth-data
+              mountPath: /root/.local/share/reth
+      volumes:
+        - name: reth-data
+          persistentVolumeClaim:
+            claimName: reth-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reth
+spec:
+  selector:
+    app: reth
+  ports:
+    - name: http
+      port: 8545
+      targetPort: 8545
+    - name: ws
+      port: 8546
+      targetPort: 8546
+  type: ClusterIP
