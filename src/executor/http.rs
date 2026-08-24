@@ -27,7 +27,8 @@ pub struct IndexerHandlers;
 impl IndexerHandlers {
     pub fn get_routes<S: AppStorage + 'static>(app: Arc<App<S>>) -> Router {
         let router = Router::new()
-            .route("/tx", get(Self::get_list::<S>))
+            .route("/tx", get(Self::get_tx::<S>))
+            .route("/list", get(Self::get_list::<S>))
             .with_state(app);
 
         let group = Router::new();
@@ -35,7 +36,7 @@ impl IndexerHandlers {
     }
 
 
-    pub async fn get_list<S: AppStorage>(State(app) : State<Arc<App<S>>>, Query(params) : Query<TxListParams>)
+    pub async fn get_tx<S: AppStorage>(State(app) : State<Arc<App<S>>>, Query(params) : Query<TxListParams>)
         -> ApiResponse<TransactionModel> {
         let mut api_response = ApiResponse::default();
         if let Err(e) = params.validate() {
@@ -49,6 +50,15 @@ impl IndexerHandlers {
         }
         let tx_hash: B256 = params.id.parse().unwrap();
         let res = app.app_storage().get_transaction(tx_hash);
+        if res.is_err() {
+            return ApiResponse::for_error(res.err().unwrap().to_string())
+        }
+        let res = res.unwrap();
+        return ApiResponse::for_success(res);
+    }
+    pub async fn get_list<S: AppStorage>(State(app) : State<Arc<App<S>>>)
+        -> ApiResponse<Vec<B256>> {
+        let res = app.app_storage().get_list();
         if res.is_err() {
             return ApiResponse::for_error(res.err().unwrap().to_string())
         }
