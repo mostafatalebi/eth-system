@@ -11,6 +11,8 @@ pub mod error;
 pub mod executor;
 pub mod common;
 mod mem;
+mod indexer;
+pub mod migrations;
 
 #[tokio::main]
 async fn main() {

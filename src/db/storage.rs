@@ -11,16 +11,16 @@ use revm::context::TxEnv;
 use revm::primitives::U256;
 use tokio_postgres::types::IsNull::No;
 use tracing::error;
-use crate::db::models::TransactionModel;
-use crate::error::AppErr;
+use crate::db::models::TxExecModel;
+use crate::error::CoreError;
 
 
 pub trait AppStorage: Send + Sync + 'static {
     // @todo later we need to set a write id for its return type
-    fn insert_transaction(&self, tx: TransactionModel) -> Result<(),AppErr>;
-    fn get_transaction(&self, tx: B256) -> Result<Option<TransactionModel>,AppErr>;
+    fn insert_transaction(&self, tx: TxExecModel) -> Result<(), CoreError>;
+    fn get_transaction(&self, tx: B256) -> Result<Option<TxExecModel>, CoreError>;
 
-    fn get_list(&self) -> Result<Option<Vec<B256>>,AppErr>;
+    fn get_list(&self) -> Result<Option<Vec<B256>>, CoreError>;
 }
 
 
@@ -29,7 +29,7 @@ pub trait AppStorage: Send + Sync + 'static {
 pub struct InMemoryStorage {
     serial:  AtomicU64,
     indexes: RwLock<BTreeMap<u64, B256>>,
-    storage: RwLock<HashMap<B256, TransactionModel>>
+    storage: RwLock<HashMap<B256, TxExecModel>>
 }
 
 impl InMemoryStorage {
@@ -43,10 +43,10 @@ impl InMemoryStorage {
 }
 
 impl AppStorage for InMemoryStorage {
-    fn insert_transaction(&self, tx: TransactionModel) -> Result<(), AppErr> {
+    fn insert_transaction(&self, tx: TxExecModel) -> Result<(), CoreError> {
         let mut s = self.storage.write().unwrap();
         if s.contains_key(&tx.tx.tx_hash()) {
-            return Err(AppErr::StorageErrorHashExists(format!("hash={:?}", tx.tx.tx_hash())))
+            return Err(CoreError::StorageErrorHashExists(format!("hash={:?}", tx.tx.tx_hash())))
         }
         let hash = tx.tx.tx_hash();
         s.insert(hash, tx);
@@ -55,14 +55,14 @@ impl AppStorage for InMemoryStorage {
         Ok(())
     }
 
-    fn get_transaction(&self, tx: B256) -> Result<Option<TransactionModel>, AppErr> {
+    fn get_transaction(&self, tx: B256) -> Result<Option<TxExecModel>, CoreError> {
         let s = self.storage.read().unwrap();
         let item = s.get(&tx);
 
         Ok(Some(item.unwrap().clone()))
     }
 
-    fn get_list(&self) -> Result<Option<Vec<B256>>,AppErr> {
+    fn get_list(&self) -> Result<Option<Vec<B256>>, CoreError> {
         if self.serial.load(Ordering::Relaxed) == 0 {
             return Ok(None)
         }
@@ -77,7 +77,7 @@ impl AppStorage for InMemoryStorage {
 }
 
 
-pub async fn dispatch_storage_worker(mut storage: Arc<impl AppStorage>, mut rc: tokio::sync::mpsc::Receiver<TransactionModel>) {
+pub async fn dispatch_storage_worker(mut storage: Arc<impl AppStorage>, mut rc: tokio::sync::mpsc::Receiver<TxExecModel>) {
     while let Some(tx_model) = rc.recv().await {
         if let Err(e) =storage.insert_transaction(tx_model.clone()) {
             error!(error = %e, tx = %(tx_model.tx.tx_hash()), "failed to insert transaction" );

@@ -3,7 +3,7 @@ use alloy::network::{Ethereum};
 use alloy::providers::{Provider};
 use alloy::rpc::types::Transaction;
 use tracing::{debug, error, info};
-use crate::error::AppErr;
+use crate::error::CoreError;
 
 pub struct SubscriptionConfig {
     pub timeout: Duration,
@@ -12,17 +12,16 @@ pub struct SubscriptionConfig {
 }
 
 pub struct Subscriber {
-
 }
 
 
 // @todo we need to make Subscriber to listen to various statuses of transactions
 impl Subscriber {
-    pub async fn start_listening(provider: impl Provider<Ethereum>+Clone, ic: &SubscriptionConfig) -> Result<(), AppErr> {
+    pub async fn start_listening_to_pending_transactions(provider: impl Provider<Ethereum>+Clone, ic: &SubscriptionConfig) -> Result<(), CoreError> {
         info!("starting subscriber...");
         let sub = provider.subscribe_pending_transactions().await;
         if sub.is_err() {
-            return Err(AppErr::SubscriptionError(sub.err().unwrap().to_string()))
+            return Err(CoreError::SubscriptionError(sub.err().unwrap().to_string()))
         }
         let mut stream = sub.unwrap().into_stream();
 
