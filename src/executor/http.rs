@@ -7,7 +7,7 @@ use revm::primitives::B256;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 use crate::app::app::App;
-use crate::db::models::TransactionModel;
+use crate::db::models::TxExecModel;
 use crate::db::storage::AppStorage;
 use crate::http_server::response::{ApiResponse, ErrorResponse};
 
@@ -37,7 +37,7 @@ impl IndexerHandlers {
 
 
     pub async fn get_tx<S: AppStorage>(State(app) : State<Arc<App<S>>>, Query(params) : Query<TxListParams>)
-        -> ApiResponse<TransactionModel> {
+        -> ApiResponse<TxExecModel> {
         let mut api_response = ApiResponse::default();
         if let Err(e) = params.validate() {
             let mut err_r = ErrorResponse::new("validation error".to_string());

@@ -7,10 +7,10 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::SignerSync;
 use revm::context::TxEnv;
 use revm::primitives::{U256};
-use crate::error::AppErr;
+use crate::error::CoreError;
 
 
-pub fn alloy_tx_to_revm_tx(tx: &alloy::rpc::types::Transaction) -> Result<TxEnv, AppErr> {
+pub fn alloy_tx_to_revm_tx(tx: &alloy::rpc::types::Transaction) -> Result<TxEnv, CoreError> {
     let tx_out = TxEnv::builder()
         .caller(tx.from())
         .nonce(tx.nonce())
@@ -25,18 +25,18 @@ pub fn alloy_tx_to_revm_tx(tx: &alloy::rpc::types::Transaction) -> Result<TxEnv,
         .blob_hashes(tx.blob_versioned_hashes().unwrap_or_default().to_vec())
         .max_fee_per_blob_gas(tx.max_fee_per_blob_gas().unwrap_or_default())
         .build()
-        .map_err(|e| AppErr::TxTypeCastFailed(format!("{:?}", e)))?;
+        .map_err(|e| CoreError::TxTypeCastFailed(format!("{:?}", e)))?;
 
     Ok(tx_out)
 }
 
-pub fn validate_tx_signature(tx: &Transaction) -> Result<(), AppErr> {
+pub fn validate_tx_signature(tx: &Transaction) -> Result<(), CoreError> {
     let curr_from = tx.from();
     let tx_env: TxEnvelope = match tx.clone().try_into() {
         Ok(tx_env) => tx_env,
         Err(e) => {
             eprintln!("failed");
-            return Err(AppErr::TxValidationFailed(format!("{:?}", e)));
+            return Err(CoreError::TxValidationFailed(format!("{:?}", e)));
         },
 
     };
@@ -47,40 +47,40 @@ pub fn validate_tx_signature(tx: &Transaction) -> Result<(), AppErr> {
     let recovered_addr = sig.recover_address_from_prehash(&sig_hash);
 
     if recovered_addr.is_err() {
-        return Err(AppErr::SigRecoveryFailed(format!("{:?}", tx_env)));
+        return Err(CoreError::SigRecoveryFailed(format!("{:?}", tx_env)));
     }
     let recovered_addr = recovered_addr.unwrap();
 
     if recovered_addr != curr_from {
-        return Err(AppErr::SigInvalid(String::from("recovered address differs from the initial from")))
+        return Err(CoreError::SigInvalid(String::from("recovered address differs from the initial from")))
     }
     Ok(())
 }
 
-pub fn validate_nonce(expected: u64, current: u64) -> Result<(), AppErr> {
+pub fn validate_nonce(expected: u64, current: u64) -> Result<(), CoreError> {
     if current > expected {
-        return Err(AppErr::NonceIsLower(expected.to_string()));
+        return Err(CoreError::NonceIsLower(expected.to_string()));
     } else if current < expected {
-        return Err(AppErr::NonceIsHigher(expected.to_string()));
+        return Err(CoreError::NonceIsHigher(expected.to_string()));
     }
     Ok(())
 }
 
-pub fn validate_balance(current_balance: U256, value: U256, gas_limit: U256, max_fee_per_gas: U256) -> Result<(), AppErr> {
+pub fn validate_balance(current_balance: U256, value: U256, gas_limit: U256, max_fee_per_gas: U256) -> Result<(), CoreError> {
     let required = value + (gas_limit & max_fee_per_gas);
     if current_balance < required {
-        return Err(AppErr::InsufficientBalance(format!("{current} is lower than {required}", current=current_balance, required=required)));
+        return Err(CoreError::InsufficientBalance(format!("{current} is lower than {required}", current=current_balance, required=required)));
     }
     Ok(())
 }
 
 
-pub fn eip1559_to_alloy_tx(tx: TxEip1559, signer: &PrivateKeySigner) -> Result<Transaction, AppErr> {
+pub fn eip1559_to_alloy_tx(tx: TxEip1559, signer: &PrivateKeySigner) -> Result<Transaction, CoreError> {
     let sig_hash = tx.signature_hash();
     let sig: Signature = match signer.sign_hash_sync(&sig_hash) {
         Ok(sig) => sig,
         Err(e) => {
-            return Err(AppErr::SigInvalid(format!("failed to sign transaction: {e}")));
+            return Err(CoreError::SigInvalid(format!("failed to sign transaction: {e}")));
         }
     };
     let env = TxEnvelope::Eip1559(tx.into_signed(sig));
@@ -130,7 +130,7 @@ mod tests {
         if rpc_tx.is_ok() {
             let result = validate_tx_signature(&rpc_tx.unwrap());
             assert!(result.is_ok());
-            assert_eq!(None, result.err())
+            assert!(result.err().is_none());
         }
     }
 

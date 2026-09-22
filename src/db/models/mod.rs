@@ -5,15 +5,15 @@ use revm::state::{AccountInfo};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct TransactionModel {
+pub struct TxExecModel {
     pub tx: Transaction,
     pub exec_result: ExecResultAndState<ExecutionResult>,
     pub account: AccountInfo
 }
 
 
-impl TransactionModel {
-    pub fn new(tx: Transaction, exec_result: ExecResultAndState<ExecutionResult>, account: AccountInfo) -> TransactionModel {
+impl TxExecModel {
+    pub fn new(tx: Transaction, exec_result: ExecResultAndState<ExecutionResult>, account: AccountInfo) -> TxExecModel {
         Self { tx, exec_result, account }
     }
 
