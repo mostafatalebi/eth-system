@@ -2,14 +2,15 @@ use std::sync::Arc;
 use axum::Router;
 use crate::app::app::{App};
 use crate::db::storage::{AppStorage, InMemoryStorage};
+use crate::indexer::repository::repository::BlockRepository;
 
-pub struct HttpServer<S: AppStorage> {
+pub struct HttpServer<S: AppStorage, R: BlockRepository+Clone> {
     routes: Router,
     bind_addr: String,
-    app: Option<Arc<App<S>>>
+    app: Option<Arc<App<S, R>>>
 }
 
-impl<S: AppStorage> HttpServer<S> {
+impl<S: AppStorage, R: BlockRepository+Clone> HttpServer<S, R> {
     pub fn new(bind_addr: String, routes: Router) -> Self {
         Self{
             bind_addr, routes,
@@ -24,7 +25,7 @@ impl<S: AppStorage> HttpServer<S> {
         axum::serve(lis, self.routes.clone()).await
     }
 
-    pub fn with_app(&mut self, app: Arc<App<S>>) {
+    pub fn with_app(&mut self, app: Arc<App<S, R>>) {
         self.app = Some(app);
     }
 }

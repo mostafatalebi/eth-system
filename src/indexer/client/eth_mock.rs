@@ -20,7 +20,7 @@ impl EthereumMockClient {
 
 
 impl EthClient for EthereumMockClient {
-    async fn get_blocks(&self, start_block_number: usize, size: usize) -> Result<Vec<Option<Block>>, CoreError> {
+    async fn get_blocks(&self, start_block_number: Option<u64>, size: u64) -> Result<Vec<Option<Block>>, CoreError> {
         return Ok(self.response_blocks.as_ref().unwrap().clone())
     }
 }

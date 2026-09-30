@@ -49,9 +49,8 @@ impl<N: Network, P: Provider<N> + Clone>  Executor<N, P> {
         }
     }
 
+    #[tracing::instrument(name = "indexing_operation", level = "error", skip_all)]
     pub async fn start_worker(&mut self) {
-        let span = tracing::error_span!("indexing_operation");
-        let _enter = span.enter();
         while let Some(tx) = self.incoming_ch.recv().await {
             let res = self.validate(&tx).await;
             if res.is_err() {
@@ -135,12 +134,11 @@ impl<N: Network, P: Provider<N> + Clone>  Executor<N, P> {
         }
 
         // sufficient balance
-        let curr_balance = self.provider.get_balance(tx.from()).await;
-        if curr_balance.is_err() {
-            return Err(CoreError::ValidationFailed(format!("failed to retrieve balance info {:?}", curr_balance.err())));
-        }
+        let curr_balance = self.provider.get_balance(tx.from()).await.map_err(|e|{
+            return CoreError::ValidationFailed(format!("failed to retrieve balance info {:?}", e));
+        })?;
         let max_fee_per_gas = alloy::primitives::U256::from(TransactionResponse::max_fee_per_gas(tx).unwrap());
-        if let Err(e) = validate_balance(curr_balance.unwrap(), tx.value(), alloy::primitives::U256::from(tx.gas_limit()), max_fee_per_gas) {
+        if let Err(e) = validate_balance(curr_balance, tx.value(), alloy::primitives::U256::from(tx.gas_limit()), max_fee_per_gas) {
             return Err(CoreError::ValidationFailed(format!("failed to validate balance {:?}", e)));
         }
 

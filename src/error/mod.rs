@@ -37,8 +37,10 @@ pub enum CoreError {
     DbTypeEncodingFailed(String),
     DbNotFound(String),
     WsConnFailed(String),
+    HttpConnFailed(String),
     RpcRequestFailed(String),
     DataSizeUnexpected(usize,usize),
+    BlockNumberUnexpected(u64, u64),
 }
 
 
@@ -75,8 +77,10 @@ impl fmt::Display for CoreError {
             CoreError::DbTypeEncodingFailed(msg) => write!(f, "db type-encoding failed: {msg}"),
             CoreError::DbNotFound(msg) => write!(f, "not found in the db: {msg}"),
             CoreError::WsConnFailed(msg) => write!(f, "websocket connect failed: {msg}"),
+            CoreError::HttpConnFailed(msg) => write!(f, "http connect failed: {msg}"),
             CoreError::RpcRequestFailed(msg) => write!(f, "rpc req failed: {msg}"),
             CoreError::DataSizeUnexpected(expected, actual) => write!(f, "unexpected data size: must be={expected} but is {actual}"),
+            CoreError::BlockNumberUnexpected(expected, actual) => write!(f, "unexpected block number: must be={expected} but is {actual}"),
         }
     }
 }

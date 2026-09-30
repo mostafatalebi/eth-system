@@ -6,3 +6,4 @@ pub mod repository;
 pub mod validator;
 
 pub mod client;
+pub mod http;

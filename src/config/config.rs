@@ -24,6 +24,8 @@ pub struct Config {
     /// address of remote upstream to connect to
     /// for fetching data [sim and index mode]
     pub eth_ws_addr: String,
+    pub upstream_http_addr: String,
+
     #[serde(deserialize_with = "deserialize_duration")]
     pub eth_tx_fetch_rpc_timeout: Duration,
 
@@ -35,7 +37,7 @@ pub struct Config {
     /// number of blocks to fetch per each
     /// network requests.
     #[validate(range(min = 1))]
-    pub block_retrieval_batch_size: usize,
+    pub block_retrieval_batch_size: u64,
 
     /// if enabled, it allows certain configs
     /// starting with test_* to take effect
@@ -65,6 +67,7 @@ impl Default for Config {
             http_bind_addr: "0.0.0.0:8080".to_string(),
             db_pg_url: "".to_string(),
             eth_ws_addr: "127.0.0.1:5439".to_string(),
+            upstream_http_addr: "".to_string(),
             eth_tx_fetch_rpc_timeout: Duration::from_secs(1),
             start_block_number: 0,
             log_level: LogLevel::Debug,

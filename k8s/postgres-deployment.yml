@@ -19,8 +19,8 @@ spec:
             - containerPort: 5432
           env:
             - name: POSTGRES_DB
-              value: rust_shop
+              value: eth_db
             - name: POSTGRES_USER
-              value: rust_admin
+              value: admin
             - name: POSTGRES_PASSWORD
-              value: rust_pass
+              value: admin

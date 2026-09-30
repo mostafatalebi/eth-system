@@ -2,12 +2,13 @@ use alloy::consensus::BlockHeader;
 use alloy::rpc::types::Block;
 use chrono::NaiveDateTime;
 use num_bigint::BigUint;
+use serde::{Deserialize, Serialize};
 use tokio_postgres::Row;
 use tokio_postgres::types::ToSql;
 use crate::error::CoreError;
 use crate::indexer::types::SqlNumeric;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockModel {
     pub number: i64,
     pub hash: Vec<u8>,
@@ -38,43 +39,37 @@ pub struct BlockModel {
 
 impl BlockModel {
 
-    fn new_from_row(row: &Row) -> BlockModel {
+    /// builds a BlockModel from a row of the blocks table. Column names must match
+    /// migrations/V1__create_table_blocks.sql; panics (like Row::get) on a missing
+    /// column or a type mismatch, so select the full row (`select * from blocks ...`)
+    pub fn new_from_db_row(row: &Row) -> BlockModel {
         return Self {
             number: row.get("number"),
             hash: row.get("hash"),
             parent_hash: row.get("parent_hash"),
-
             nonce: row.get("nonce"),
-            sha3_uncles: row.get("ommers_hash"),
+            sha3_uncles: row.get("sha3_uncles"),
             logs_bloom: row.get("logs_bloom"),
             transactions_root: row.get("transactions_root"),
             state_root: row.get("state_root"),
             receipts_root: row.get("receipts_root"),
-
             parent_beacon_block_root: row.get("parent_beacon_block_root"),
             withdrawals_root: row.get("withdrawals_root"),
             fee_recipient: row.get("fee_recipient"),
             requests_hash: row.get("requests_hash"),
-
-
             extra_data: row.get("extra_data"),
-
             size: row.get("size"),
             gas_limit: row.get("gas_limit"),
             gas_used: row.get("gas_used"),
             base_fee_per_gas: row.get("base_fee_per_gas"),
-
             blob_gas_used: row.get("blob_gas_used"),
             excess_blob_gas: row.get("excess_blob_gas"),
-
             prev_randao: row.get("prev_randao"),
             timestamp: row.get("timestamp"),
-
-            create_at: row.get("create_at"),
+            create_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         }
     }
-
 
     pub fn new_from_rpc_block(block: &Block) -> Result<BlockModel, CoreError> {
         Ok(Self {

@@ -44,6 +44,15 @@ impl<T: Serialize> ApiResponse<T> {
         }
     }
 
+    pub fn not_found(err_msg: String) -> Self {
+        Self {
+            status_code: StatusCode::NOT_FOUND,
+            ok: false,
+            error: Some(ErrorResponse::new(err_msg)),
+            data: None,
+        }
+    }
+
     pub fn for_error(err_msg: String) -> Self {
         Self {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,

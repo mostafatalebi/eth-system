@@ -9,6 +9,7 @@ use validator::Validate;
 use crate::app::app::App;
 use crate::db::models::TxExecModel;
 use crate::db::storage::AppStorage;
+use crate::indexer::repository::repository::BlockRepository;
 use crate::http_server::response::{ApiResponse, ErrorResponse};
 
 
@@ -22,13 +23,13 @@ pub struct TxListParams {
 pub struct TxResponse {
 }
 
-pub struct IndexerHandlers;
+pub struct SimulatorHandlers;
 
-impl IndexerHandlers {
-    pub fn get_routes<S: AppStorage + 'static>(app: Arc<App<S>>) -> Router {
+impl SimulatorHandlers {
+    pub fn get_routes<S: AppStorage + 'static, R: BlockRepository+Clone>(app: Arc<App<S, R>>) -> Router {
         let router = Router::new()
-            .route("/tx", get(Self::get_tx::<S>))
-            .route("/list", get(Self::get_list::<S>))
+            .route("/tx", get(Self::get_tx::<S, R>))
+            .route("/list", get(Self::get_list::<S, R>))
             .with_state(app);
 
         let group = Router::new();
@@ -36,7 +37,7 @@ impl IndexerHandlers {
     }
 
 
-    pub async fn get_tx<S: AppStorage>(State(app) : State<Arc<App<S>>>, Query(params) : Query<TxListParams>)
+    pub async fn get_tx<S: AppStorage, R: BlockRepository+Clone>(State(app) : State<Arc<App<S, R>>>, Query(params) : Query<TxListParams>)
         -> ApiResponse<TxExecModel> {
         let mut api_response = ApiResponse::default();
         if let Err(e) = params.validate() {
@@ -56,7 +57,7 @@ impl IndexerHandlers {
         let res = res.unwrap();
         return ApiResponse::for_success(res);
     }
-    pub async fn get_list<S: AppStorage>(State(app) : State<Arc<App<S>>>)
+    pub async fn get_list<S: AppStorage, R: BlockRepository+Clone>(State(app) : State<Arc<App<S, R>>>)
         -> ApiResponse<Vec<B256>> {
         let res = app.app_storage().get_list();
         if res.is_err() {

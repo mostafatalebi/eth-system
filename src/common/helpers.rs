@@ -67,7 +67,10 @@ pub fn validate_nonce(expected: u64, current: u64) -> Result<(), CoreError> {
 }
 
 pub fn validate_balance(current_balance: U256, value: U256, gas_limit: U256, max_fee_per_gas: U256) -> Result<(), CoreError> {
-    let required = value + (gas_limit & max_fee_per_gas);
+    let required = gas_limit.checked_mul(max_fee_per_gas).and_then(|f|{
+        f.checked_add(value)
+    }).ok_or(CoreError::InsufficientBalance("gas calculation overflow".into()));
+    let required = required?;
     if current_balance < required {
         return Err(CoreError::InsufficientBalance(format!("{current} is lower than {required}", current=current_balance, required=required)));
     }

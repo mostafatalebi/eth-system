@@ -4,6 +4,7 @@ use alloy::rpc::types::Block;
 use revm::bytecode::bitvec::ptr::Mut;
 use crate::error::CoreError;
 use crate::indexer::models::block::BlockModel;
+use crate::indexer::models::transaction::TransactionModel;
 use crate::indexer::repository::repository::BlockRepository;
 
 
@@ -41,7 +42,7 @@ impl MockRepository {
 
 
 impl BlockRepository for MockRepository {
-    async fn upsert_blocks(&self, blocks: &Vec<BlockModel>) -> Result<(), CoreError> {
+    async fn upsert_blocks(&self, blocks: &Vec<BlockModel>, transactions: &Vec<Vec<TransactionModel>>) -> Result<(), CoreError> {
         if self.inner.lock().unwrap().expected_upsert_error.is_some() {
             return Err(self.inner.lock().unwrap().expected_upsert_error.take().unwrap());
         }
@@ -55,7 +56,15 @@ impl BlockRepository for MockRepository {
         todo!()
     }
 
-    async fn last_block_number(&self) -> Result<u64, CoreError> {
+    async fn last_block_number(&self) -> Result<Option<u64>, CoreError> {
         todo!()
+    }
+
+    async fn block_exists(&self, number: i64, hash: &Vec<u8>, parent_hash: &Vec<u8>) -> Result<bool, CoreError> {
+        Ok(true)
+    }
+
+    async fn get_block(&self, hash: Option<Vec<u8>>, number: Option<i64>) -> Result<Option<BlockModel>, CoreError> {
+        Ok(None)
     }
 }

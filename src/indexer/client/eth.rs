@@ -1,12 +1,12 @@
-use alloy::primitives::BlockNumber;
-use alloy::providers::WsConnect;
+use alloy::eips::BlockNumberOrTag;
+use alloy::providers::{ProviderBuilder, WsConnect};
 use alloy::rpc::client::{ClientBuilder, RpcClient};
 use alloy::rpc::types::Block;
 use clap::builder::Str;
 use crate::error::CoreError;
 
 pub trait EthClient {
-    async fn get_blocks(&self, start_block_number: usize, size: usize) -> Result<Vec<Option<Block>>, CoreError>;
+    async fn get_blocks(&self, start_block_number: Option<u64>, size: u64) -> Result<Vec<Option<Block>>, CoreError>;
 }
 
 
@@ -15,28 +15,23 @@ pub struct AlloyRpcClient {
 }
 
 impl AlloyRpcClient {
-    pub async fn new(ws_url: String) -> Result<Self, CoreError> {
-        let ws = WsConnect::new(ws_url.clone());
-        let ws_client = ClientBuilder::default().ws(ws).await;
-        if ws_client.is_err() {
-            return Err(CoreError::WsConnFailed(ws_client.err().unwrap().to_string()))
-        }
-        let ws_client = ws_client.unwrap();
+    pub async fn new(upstream_addr: &str) -> Result<Self, CoreError> {
+        let client = ClientBuilder::default().http(upstream_addr.parse().unwrap());
         Ok(Self {
-            inner: ws_client
+            inner: client
         })
     }
 }
 
 impl EthClient for AlloyRpcClient {
-    async fn get_blocks(&self, last_block_number: usize, size: usize) -> Result<Vec<Option<Block>>, CoreError> {
+    async fn get_blocks(&self, start_block_number: Option<u64>, size: u64) -> Result<Vec<Option<Block>>, CoreError> {
         let mut batch = self.inner.new_batch();
 
         let mut waiters = Vec::new();
-        for block_num in last_block_number..last_block_number + size {
+        for block_num in start_block_number.unwrap()..start_block_number.unwrap() + size {
             let a = batch.add_call::<_, Option<Block>>(
                 "eth_getBlockByNumber",
-                &(block_num as BlockNumber, true),
+                &(BlockNumberOrTag::Number(block_num as u64), true),
             );
             // @todo must handle error case
             if a.is_ok() {
@@ -44,7 +39,9 @@ impl EthClient for AlloyRpcClient {
             }
         }
 
-        batch.send();
+        batch.send().await.map_err(|e|{
+            CoreError::RpcRequestFailed(e.to_string())
+        })?;
 
         let blocks = futures::future::try_join_all(waiters).await;
 
