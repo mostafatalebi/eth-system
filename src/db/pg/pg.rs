@@ -22,7 +22,7 @@ impl Pg {
             return Err(CoreError::DbConnFailed(res.err().unwrap().to_string()));
         }
         return Ok(res.unwrap())
-        // let (client, connection) = tokio_postgres::connect(&url, NoTls).await?;
+        // let (clients, connection) = tokio_postgres::connect(&url, NoTls).await?;
         //
         // tokio::spawn(async move {
         //     if let Err(e) = connection.await {
@@ -30,6 +30,6 @@ impl Pg {
         //     }
         // });
         //
-        // Ok(Arc::new(client))
+        // Ok(Arc::new(clients))
     }
 }

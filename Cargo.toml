@@ -30,6 +30,11 @@ bigdecimal = "0.4.10"
 futures = "0.3.34"
 deadpool-postgres = "0.14.2"
 tokio-util = "0.7.19"
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.7.1", features = ["trace", "timeout", "catch-panic"] }
+argon2 = "0.6.0"
+jsonwebtoken = { version = "11.1.0", features = ["rust_crypto"] }
+rpassword = "7.5.4"
 
 [features]
 integration-tests = []

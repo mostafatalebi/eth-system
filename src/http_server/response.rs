@@ -53,6 +53,15 @@ impl<T: Serialize> ApiResponse<T> {
         }
     }
 
+    pub fn unauthorized(err_msg: String) -> Self {
+        Self {
+            status_code: StatusCode::UNAUTHORIZED,
+            ok: false,
+            error: Some(ErrorResponse::new(err_msg)),
+            data: None,
+        }
+    }
+
     pub fn for_error(err_msg: String) -> Self {
         Self {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,

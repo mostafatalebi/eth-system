@@ -1,0 +1,327 @@
+{
+  "info": {
+    "name": "eth_app API",
+    "description": "HTTP API of eth_app. Run Auth > Login (or Signup) first: the access and refresh tokens are saved into the collection variables and every other request sends the access token as a Bearer token. Adjust base_url to the http_bind_addr of the config.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{access_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "username",
+      "value": "alice"
+    },
+    {
+      "key": "password",
+      "value": "change-me-please"
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "refresh_token",
+      "value": ""
+    },
+    {
+      "key": "block_number",
+      "value": "1"
+    },
+    {
+      "key": "block_hash",
+      "value": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "key": "tx_hash",
+      "value": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Signup",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "    const data = pm.response.json().data;",
+                  "    pm.collectionVariables.set('access_token', data.access_token);",
+                  "    pm.collectionVariables.set('refresh_token', data.refresh_token);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/signup",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "signup"
+              ]
+            },
+            "description": "Creates a user with the default role (user) and returns an access token and a refresh token. Only served when enable_http_signup=true; username is 3-32 characters of a-z 0-9 _ - . and password is 8-128 characters."
+          }
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "    const data = pm.response.json().data;",
+                  "    pm.collectionVariables.set('access_token', data.access_token);",
+                  "    pm.collectionVariables.set('refresh_token', data.refresh_token);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Returns an access token (JWT) and a refresh token for a correct username and password."
+          }
+        },
+        {
+          "name": "Refresh",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "    const data = pm.response.json().data;",
+                  "    pm.collectionVariables.set('access_token', data.access_token);",
+                  "    pm.collectionVariables.set('refresh_token', data.refresh_token);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refresh_token\": \"{{refresh_token}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/refresh",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "Exchanges a refresh token for a new access token and refresh token. A refresh token can be used only once."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Indexer",
+      "item": [
+        {
+          "name": "List blocks",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/indexer/blocks/list",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "indexer",
+                "blocks",
+                "list"
+              ]
+            },
+            "description": "Lists indexed blocks."
+          }
+        },
+        {
+          "name": "Get block by number",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/indexer/blocks/number/{{block_number}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "indexer",
+                "blocks",
+                "number",
+                "{{block_number}}"
+              ]
+            },
+            "description": "A non-negative block number."
+          }
+        },
+        {
+          "name": "Get block by hash",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/indexer/blocks/hash/{{block_hash}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "indexer",
+                "blocks",
+                "hash",
+                "{{block_hash}}"
+              ]
+            },
+            "description": "A 32-byte hash as hex, with or without the 0x prefix."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Simulator",
+      "item": [
+        {
+          "name": "List transactions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/simulator/list",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "simulator",
+                "list"
+              ]
+            },
+            "description": "Lists the hashes of simulated transactions."
+          }
+        },
+        {
+          "name": "Get transaction",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/simulator/tx?id={{tx_hash}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "simulator",
+                "tx"
+              ],
+              "query": [
+                {
+                  "key": "id",
+                  "value": "{{tx_hash}}"
+                }
+              ]
+            },
+            "description": "Returns the execution result of a simulated transaction."
+          }
+        }
+      ]
+    }
+  ]
+}

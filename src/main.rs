@@ -5,6 +5,7 @@ use app::cmd::{Cmd};
 pub mod subscriber;
 pub mod db;
 pub mod http_server;
+pub mod auth;
 pub mod app;
 pub mod config;
 pub mod error;

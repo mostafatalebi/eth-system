@@ -11,13 +11,15 @@ use tracing::{info};
 use tracing_subscriber::util::SubscriberInitExt;
 use crate::app::cmd::{CmdArgs};
 use crate::app::cmd::AppMode::{Migration, Simulator};
+use crate::auth::pg_repository::PgUserRepository;
+use crate::auth::seed::seed_default_user;
 use crate::config::config::Config;
 use crate::db::db::{DbFactory, DbType};
 use crate::db::models::TxExecModel;
 use crate::db::storage::{dispatch_storage_worker, AppStorage};
 use crate::error::CoreError;
 use crate::executor::executor::Executor;
-use crate::indexer::client::eth::AlloyRpcClient;
+use crate::indexer::clients::eth::AlloyRpcClient;
 use crate::indexer::fetcher::{FetchConfig, Fetcher};
 use crate::indexer::indexer::Indexer;
 use crate::indexer::repository::repository::BlockRepository;
@@ -119,7 +121,7 @@ impl<S: AppStorage, R: BlockRepository+Clone> App<S, R> {
         fetcher_cnf.set_ws_url(self.config.eth_ws_addr.clone());
         let repository = self.block_repository.clone()
             .ok_or(CoreError::Empty("block repository is not set".to_string()))?;
-        let eth_client = AlloyRpcClient::new(&self.config.upstream_http_addr).await?;
+        let eth_client = AlloyRpcClient::new(&self.config.block_upstream_http_addr).await?;
         let cancellation_token = CancellationToken::new();
         let fetcher = Fetcher::new(fetcher_cnf, repository, eth_client, cancellation_token);
         let mut indexer = Indexer::new(fetcher);
@@ -144,11 +146,14 @@ impl<S: AppStorage, R: BlockRepository+Clone> App<S, R> {
 
 
     pub async fn migrate(&self) -> Result<(), CoreError> {
-        let mut client = self.persistence.as_ref().unwrap().pg().await?;
+        let persistence = self.persistence.as_ref().unwrap();
+        let mut client = persistence.pg().await?;
         let client = client.deref_mut().deref_mut();
-        let report = migrations::runner().run_async(client).await;
-        info!("Migrate report: {:?}", report);
+        let report = migrations::runner().run_async(client).await
+            .map_err(|e| CoreError::MigrationFailed(e.to_string()))?;
+        info!("applied {} migration(s)", report.applied_migrations().len());
 
+        seed_default_user(&PgUserRepository::new(persistence.clone()), &self.config).await?;
         Ok(())
     }
 }

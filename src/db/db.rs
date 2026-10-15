@@ -10,7 +10,7 @@ pub enum DbType {
 
 #[derive(Clone, Default)]
 pub struct DbFactory {
-    // @todo must refactor to an abstract client, not per-impl
+    // @todo must refactor to an abstract clients, not per-impl
     inner_pg: Option<deadpool_postgres::Pool>,
 }
 

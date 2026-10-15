@@ -124,6 +124,7 @@ impl BlockModel {
         values.push(&self.excess_blob_gas);
         values.push(&self.prev_randao);
         values.push(&self.timestamp);
+
         values
     }
 }

@@ -3,7 +3,7 @@ use tokio::join;
 use tokio::time::{sleep};
 use tracing::error;
 use crate::error::CoreError;
-use crate::indexer::client::eth::EthClient;
+use crate::indexer::clients::eth::EthClient;
 use crate::indexer::fetcher::Fetcher;
 use crate::indexer::repository::repository::BlockRepository;
 
