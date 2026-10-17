@@ -5,10 +5,9 @@ use tokio_postgres::error::SqlState;
 use tokio_postgres::types::ToSql;
 use crate::db::db::DbFactory;
 use crate::error::CoreError;
-use crate::indexer::models::account::AccountModel;
 use crate::indexer::models::block::BlockModel;
 use crate::indexer::models::transaction::TransactionModel;
-use crate::indexer::repository::queries::{BLOCK_IS_FINALIZED_QUERY, BLOCK_MARK_FINALIZED_CHECKPOINT_QUERY, LAST_FINALIZED_CHECKPOINT_QUERY, ACCOUNT_UPSERT_QUERY, BLOCK_INSERT_QUERY, TX_INSERT_QUERY};
+use crate::indexer::repository::queries::{BLOCK_IS_FINALIZED_QUERY, BLOCK_MARK_FINALIZED_CHECKPOINT_QUERY, LAST_FINALIZED_CHECKPOINT_QUERY, BLOCK_INSERT_QUERY, TX_INSERT_QUERY};
 use crate::indexer::repository::repository::{BlockData, BlockRepository};
 
 #[derive(Clone)]
@@ -61,9 +60,6 @@ impl BlockRepository for PgBlockRepository {
             .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
         let tx_stmt = tx.prepare(TX_INSERT_QUERY).await
             .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
-        let acc_stmt = tx.prepare(ACCOUNT_UPSERT_QUERY).await
-            .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
-        let mut i = 0;
         for (block, block_transactions) in block_data.blocks.iter().zip(block_data.transactions.iter()) {
             let mut res = self.upsert_single_block(&bck_stmt, &tx, block).await;
             if res.is_err() {
@@ -74,15 +70,8 @@ impl BlockRepository for PgBlockRepository {
                 if res.is_err() {
                     tx.rollback().await.map_err(|e| CoreError::DbTxRollbackFailed(pg_err_msg(&e)))?;
                     return Err(res.unwrap_err());
-                } else {
-                    res = self.insert_accounts_of_a_block(&acc_stmt, &tx, &block, &block_data.accounts[i]).await;
-                    if res.is_err() {
-                        tx.rollback().await.map_err(|e| CoreError::DbTxRollbackFailed(pg_err_msg(&e)))?;
-                        return Err(res.unwrap_err());
-                    }
                 }
             }
-            i += 1;
         }
 
         let res = tx.commit().await;
@@ -94,7 +83,7 @@ impl BlockRepository for PgBlockRepository {
     }
 
     /// deletes the stored blocks from `oldest_block` through `newest_block` (both inclusive),
-    /// together with their transactions (`on delete cascade`). Accounts are not touched.
+    /// together with their transactions (`on delete cascade`).
     /// Runs in a single db transaction: either the whole range is deleted or nothing.
     async fn delete_block_cascading(&self, oldest_block: Vec<u8>, newest_block: Vec<u8>) -> Result<(), CoreError> {
 
@@ -173,20 +162,15 @@ impl BlockRepository for PgBlockRepository {
 
         tx.execute("delete from blocks where number > $1", &[&ancestor_number]).await
             .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
-        tx.execute("delete from accounts where first_block_number > $1", &[&ancestor_number]).await
-            .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
 
         let stmt = tx.prepare(BLOCK_INSERT_QUERY).await
             .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
         let tx_stmt = tx.prepare(TX_INSERT_QUERY).await
             .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
-        let acc_stmt = tx.prepare(ACCOUNT_UPSERT_QUERY).await
-            .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
 
         for (i, block) in new_chain.blocks.iter().enumerate() {
             self.upsert_single_block(&stmt, &tx, block).await?;
             self.insert_transactions_of_a_block(&tx_stmt, &tx, block, &new_chain.transactions[i]).await?;
-            self.insert_accounts_of_a_block(&acc_stmt, &tx, block, &new_chain.accounts[i]).await?;
         }
 
         tx.commit().await
@@ -272,24 +256,15 @@ impl PgBlockRepository {
         }
         Ok(())
     }
-
-    async fn insert_accounts_of_a_block(&self, stmt: &Statement, pg_tx: &Transaction<'_>, block: &BlockModel, accounts: &Vec<AccountModel>) -> Result<(), CoreError> {
-        for account in accounts {
-            pg_tx.execute(stmt, account.get_prepared_values().as_slice()).await
-                .map_err(|e| CoreError::DbTxExecFailed(pg_err_msg(&e)))?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(all(test, feature = "integration-tests"))]
 mod tests {
     use super::*;
-    use alloy::primitives::{Address, B256};
+    use alloy::primitives::B256;
     use alloy::rpc::types::Block;
     use crate::config::config::Config;
     use crate::db::db::DbType::Postgres;
-    use crate::indexer::models::account::AccountType;
     use crate::indexer::types::mocks::{mock_block_with_parent, mock_blocks_list};
 
     static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -302,7 +277,7 @@ mod tests {
         let mut client = db.pg().await.unwrap();
         crate::migrations::migration_runner::migrations::runner()
             .run_async(std::ops::DerefMut::deref_mut(std::ops::DerefMut::deref_mut(&mut client))).await.unwrap();
-        client.batch_execute("truncate blocks, transactions, accounts").await.unwrap();
+        client.batch_execute("truncate blocks, transactions").await.unwrap();
         (PgBlockRepository::new(db.clone()), db, guard)
     }
 
@@ -310,14 +285,10 @@ mod tests {
         mock_blocks_list(count, start).into_iter().flatten().collect()
     }
 
-    async fn insert(repo: &PgBlockRepository, blocks: &[Block], accounts: Vec<Vec<AccountModel>>) -> Result<(), CoreError> {
+    async fn insert_blocks(repo: &PgBlockRepository, blocks: &[Block]) -> Result<(), CoreError> {
         let models: Vec<BlockModel> = blocks.iter().map(|b| BlockModel::new_from_rpc_block(b).unwrap()).collect();
         let transactions = vec![vec![]; models.len()];
-        repo.upsert_blocks(&BlockData::new(&models, &transactions, &accounts)).await
-    }
-
-    async fn insert_blocks(repo: &PgBlockRepository, blocks: &[Block]) -> Result<(), CoreError> {
-        insert(repo, blocks, vec![vec![]; blocks.len()]).await
+        repo.upsert_blocks(&BlockData::new(&models, &transactions)).await
     }
 
     async fn stored_hashes(db: &DbFactory) -> Vec<Vec<u8>> {
@@ -418,7 +389,7 @@ mod tests {
         let new_3 = mock_block_with_parent(3, stored[1].header.hash);
         let models = vec![BlockModel::new_from_rpc_block(&new_3).unwrap()];
 
-        repo.replace_chain_above(2, &BlockData::new(&models, &vec![vec![]], &vec![vec![]])).await.unwrap();
+        repo.replace_chain_above(2, &BlockData::new(&models, &vec![vec![]])).await.unwrap();
 
         assert_eq!(stored_hashes(&db).await, vec![
             stored[0].header.hash.to_vec(),
@@ -474,21 +445,5 @@ mod tests {
         repo.mark_finalized_checkpoint(stored[1].header.hash.to_vec()).await.unwrap();
 
         assert_eq!(repo.last_finalized_checkpoint().await.unwrap(), Some(2));
-    }
-
-    // an account stored as eoa is upgraded to contract and never downgraded back
-    #[tokio::test]
-    async fn test_account_type_only_upgrades_eoa_to_contract() {
-        let (repo, db, _lock) = setup().await;
-        let address = Address::repeat_byte(0x11);
-        let eoa = |block: u64| AccountModel::new_from_rpc_state(address, block, U256::ZERO, 0, &[]).unwrap();
-        let contract = AccountModel::new_from_rpc_state(address, 2, U256::ZERO, 1, &[0x60, 0x80]).unwrap();
-
-        insert(&repo, &chain(3, 1), vec![vec![eoa(1)], vec![contract], vec![eoa(3)]]).await.unwrap();
-
-        let client = db.pg().await.unwrap();
-        let row = client.query_one("select account_type from accounts where address = $1", &[&address.to_vec()]).await.unwrap();
-        let account_type: AccountType = row.get("account_type");
-        assert_eq!(account_type, AccountType::Contract);
     }
 }

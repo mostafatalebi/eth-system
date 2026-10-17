@@ -1,14 +1,14 @@
 ### Overview
 This project allows indexing blocks of a given Ethereum compatible blockchain (mainnet, testnet, sepolia, etc.). 
-It stores every data of every block (transaction, log, account etc.) and can detect reorg and 
+It stores every data of every block (transaction, log etc.) and can detect reorg and 
 correct itself by deleting all unneeded entities.
 
 ### Architecture
-The app runs in one of five modes, selected with `--mode`: indexer, simulator, migration, create-user and disable-user
+The app runs in one of five modes, selected with `--mode`: indexer, simulator, migration, create-default-user and disable-user
 - indexer: This is the main mode. It indexes the blockchain, and stores its entities in postgres database.
 It also exposes the database through an HTTP server. Endpoints require a Bearer JWT (access token). The app issues
 access and refresh tokens through `POST /api/auth/signup` (if `enable_http_signup`), `/api/auth/login` and `/api/auth/refresh`
-(see `src/auth`). Users with other roles are created with `cargo run -- --mode create-user --username <name> --roles admin,user --config example.env`.
+(see `src/auth`). Users live in postgres and refresh tokens in redis (`redis_url`, `redis_prefix`), both behind repository traits. The default user (username, password and roles from the `default_user_*` config entries) is created with `cargo run -- --mode create-default-user --config example.env`.
 Users are disabled (not deleted) with `--mode disable-user --username <name>`.
 - simulator: simulates executing transactions. It also exposes an HTTP api
 to see data of executed transactions; this is stored in the memory and would go away
@@ -20,7 +20,10 @@ It is executed using the following command: `cargo run -- --mode indexer --confi
 
 ### Database
 It stores data in postgres. Migration is run using the following command: `cargo run -- --mode migration --config example.env`
-With `default_user_enabled=true` the migration command also creates the default user from the `default_user_*` config entries, but only while the users table is empty.
+No user is ever created automatically: a fresh database has none. Create the first one with `cargo run -- --mode create-default-user --config example.env`, which reads `default_user_username`, `default_user_password` and `default_user_roles` from the config.
+
+### Configuration
+`config.env.example` is the committed template and must list every required config key, with placeholder values (never real secrets). `example.env` is the git-ignored local copy with real values.
 
 ### Testing
 Tests are grouped into normal tests and integration tests. Normal tests are unit tests, but integration

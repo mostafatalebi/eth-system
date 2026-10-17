@@ -1,13 +1,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use crate::auth::models::UserModel;
-use crate::auth::repository::UserRepository;
+use crate::auth::repository::{RefreshTokenRepository, UserRepository};
 use crate::error::CoreError;
 
 #[derive(Default)]
 struct MockUserRepositoryInner {
     users: Vec<UserModel>,
-    refresh_tokens: Vec<(Vec<u8>, i64, Instant)>,
 }
 
 #[derive(Clone, Default)]
@@ -54,31 +53,38 @@ impl UserRepository for MockUserRepository {
             return Ok(None);
         };
         user.is_active = false;
-        let id = user.id;
-        inner.refresh_tokens.retain(|(_, user_id, _)| *user_id != id);
-        Ok(Some(id))
-    }
-
-    async fn count_users(&self) -> Result<i64, CoreError> {
-        Ok(self.inner.lock().unwrap().users.len() as i64)
+        Ok(Some(user.id))
     }
 
     async fn get_user_by_id(&self, id: i64) -> Result<Option<UserModel>, CoreError> {
         Ok(self.inner.lock().unwrap().users.iter().find(|u| u.id == id).cloned())
     }
+}
 
-    async fn store_refresh_token(&self, user_id: i64, token_hash: &[u8], ttl_secs: i64) -> Result<(), CoreError> {
+#[derive(Clone, Default)]
+pub struct MockRefreshTokenRepository {
+    tokens: Arc<Mutex<Vec<(Vec<u8>, i64, Instant)>>>,
+}
+
+impl MockRefreshTokenRepository {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl RefreshTokenRepository for MockRefreshTokenRepository {
+    async fn store(&self, user_id: i64, token_hash: &[u8], ttl_secs: i64) -> Result<(), CoreError> {
         let expires_at = Instant::now() + Duration::from_secs(ttl_secs as u64);
-        self.inner.lock().unwrap().refresh_tokens.push((token_hash.to_vec(), user_id, expires_at));
+        self.tokens.lock().unwrap().push((token_hash.to_vec(), user_id, expires_at));
         Ok(())
     }
 
-    async fn consume_refresh_token(&self, token_hash: &[u8]) -> Result<Option<i64>, CoreError> {
-        let mut inner = self.inner.lock().unwrap();
-        let Some(position) = inner.refresh_tokens.iter().position(|(hash, _, _)| hash == token_hash) else {
+    async fn consume(&self, token_hash: &[u8]) -> Result<Option<i64>, CoreError> {
+        let mut tokens = self.tokens.lock().unwrap();
+        let Some(position) = tokens.iter().position(|(hash, _, _)| hash == token_hash) else {
             return Ok(None);
         };
-        let (_, user_id, expires_at) = inner.refresh_tokens.remove(position);
+        let (_, user_id, expires_at) = tokens.remove(position);
         Ok((expires_at > Instant::now()).then_some(user_id))
     }
 }

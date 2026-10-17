@@ -12,24 +12,25 @@ use crate::auth::jwt::JwtService;
 use crate::auth::models::UserModel;
 use crate::auth::password::{hash_password, verify_password};
 use crate::auth::refresh::{hash_refresh_token, new_refresh_token};
-use crate::auth::repository::UserRepository;
+use crate::auth::repository::{RefreshTokenRepository, UserRepository};
 use crate::error::CoreError;
 use crate::http_server::response::{ApiResponse, ErrorResponse};
 
 const DEFAULT_ROLES: [&str; 1] = ["user"];
 
-pub struct AuthState<U: UserRepository> {
+pub struct AuthState<U: UserRepository, T: RefreshTokenRepository> {
     pub users: U,
+    pub tokens: T,
     pub jwt: Arc<JwtService>,
     pub refresh_token_expiry: Duration,
     pub enable_signup: bool,
 }
 
-impl<U: UserRepository> AuthState<U> {
+impl<U: UserRepository, T: RefreshTokenRepository> AuthState<U, T> {
     async fn issue_tokens(&self, user: &UserModel) -> Result<TokenPair, CoreError> {
         let access_token = self.jwt.issue(user)?;
         let (refresh_token, refresh_token_hash) = new_refresh_token();
-        self.users.store_refresh_token(user.id, refresh_token_hash.as_slice(), self.refresh_token_expiry.as_secs() as i64).await?;
+        self.tokens.store(user.id, refresh_token_hash.as_slice(), self.refresh_token_expiry.as_secs() as i64).await?;
         Ok(TokenPair { access_token, refresh_token })
     }
 }
@@ -84,18 +85,18 @@ fn validate_username_chars(username: &str) -> Result<(), ValidationError> {
 pub struct AuthHandlers;
 
 impl AuthHandlers {
-    pub fn get_routes<U: UserRepository>(state: Arc<AuthState<U>>) -> Router {
+    pub fn get_routes<U: UserRepository, T: RefreshTokenRepository>(state: Arc<AuthState<U, T>>) -> Router {
         let mut router = Router::new()
-            .route("/auth/login", post(Self::login::<U>))
-            .route("/auth/refresh", post(Self::refresh::<U>));
+            .route("/auth/login", post(Self::login::<U, T>))
+            .route("/auth/refresh", post(Self::refresh::<U, T>));
         if state.enable_signup {
-            router = router.route("/auth/signup", post(Self::signup::<U>));
+            router = router.route("/auth/signup", post(Self::signup::<U, T>));
         }
         router.with_state(state)
     }
 
     /// POST /auth/signup; creates a user with the default roles and returns its tokens
-    pub async fn signup<U: UserRepository>(State(state): State<Arc<AuthState<U>>>, payload: Result<Json<SignupRequest>, JsonRejection>)
+    pub async fn signup<U: UserRepository, T: RefreshTokenRepository>(State(state): State<Arc<AuthState<U, T>>>, payload: Result<Json<SignupRequest>, JsonRejection>)
         -> ApiResponse<TokenPair> {
         let Ok(Json(mut request)) = payload else {
             return Self::error_response(StatusCode::BAD_REQUEST, "invalid request body");
@@ -127,7 +128,7 @@ impl AuthHandlers {
     }
 
     /// POST /auth/login; returns new tokens for a correct username and password
-    pub async fn login<U: UserRepository>(State(state): State<Arc<AuthState<U>>>, payload: Result<Json<LoginRequest>, JsonRejection>)
+    pub async fn login<U: UserRepository, T: RefreshTokenRepository>(State(state): State<Arc<AuthState<U, T>>>, payload: Result<Json<LoginRequest>, JsonRejection>)
         -> ApiResponse<TokenPair> {
         let Ok(Json(request)) = payload else {
             return Self::error_response(StatusCode::BAD_REQUEST, "invalid request body");
@@ -154,7 +155,7 @@ impl AuthHandlers {
 
     /// POST /auth/refresh; exchanges a refresh token for new tokens. The refresh token is
     /// single use: it is consumed here and a new one is returned
-    pub async fn refresh<U: UserRepository>(State(state): State<Arc<AuthState<U>>>, payload: Result<Json<RefreshRequest>, JsonRejection>)
+    pub async fn refresh<U: UserRepository, T: RefreshTokenRepository>(State(state): State<Arc<AuthState<U, T>>>, payload: Result<Json<RefreshRequest>, JsonRejection>)
         -> ApiResponse<TokenPair> {
         let Ok(Json(request)) = payload else {
             return Self::error_response(StatusCode::BAD_REQUEST, "invalid request body");
@@ -162,7 +163,7 @@ impl AuthHandlers {
         let invalid = || Self::error_response(StatusCode::UNAUTHORIZED, "invalid or expired refresh token");
 
         let token_hash = hash_refresh_token(&request.refresh_token);
-        let user_id = match state.users.consume_refresh_token(token_hash.as_slice()).await {
+        let user_id = match state.tokens.consume(token_hash.as_slice()).await {
             Ok(Some(user_id)) => user_id,
             Ok(None) => return invalid(),
             Err(e) => return Self::internal_error("refresh", e),
@@ -212,14 +213,14 @@ mod tests {
     use axum::http::{header, Request};
     use serde_json::{json, Value};
     use tower::ServiceExt;
-    use crate::auth::mock_repository::MockUserRepository;
+    use crate::auth::mock_repository::{MockRefreshTokenRepository, MockUserRepository};
 
     const PASSWORD: &str = "long-enough-password";
 
     fn setup(enable_signup: bool, refresh_token_expiry: Duration) -> (Router, MockUserRepository, Arc<JwtService>) {
         let users = MockUserRepository::new();
         let jwt = Arc::new(JwtService::new("0123456789abcdef0123456789abcdef", Duration::from_secs(60)).unwrap());
-        let state = Arc::new(AuthState { users: users.clone(), jwt: jwt.clone(), refresh_token_expiry, enable_signup });
+        let state = Arc::new(AuthState { users: users.clone(), tokens: MockRefreshTokenRepository::new(), jwt: jwt.clone(), refresh_token_expiry, enable_signup });
         (AuthHandlers::get_routes(state), users, jwt)
     }
 

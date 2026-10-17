@@ -4,7 +4,6 @@ use revm::primitives::U256;
 use std::future::Future;
 use alloy::signers::k256::elliptic_curve::consts::U25;
 use crate::error::CoreError;
-use crate::indexer::models::account::AccountModel;
 use crate::indexer::models::block::BlockModel;
 use crate::indexer::models::transaction::TransactionModel;
 
@@ -35,15 +34,13 @@ pub trait BlockRepository: Send + Sync + 'static {
 pub struct BlockData<'a> {
     pub blocks: &'a Vec<BlockModel>,
     pub transactions: &'a Vec<Vec<TransactionModel>>,
-    pub accounts: &'a Vec<Vec<AccountModel>>,
 }
 
 impl<'a> BlockData<'a> {
-    pub fn new(blocks: &'a Vec<BlockModel>, transactions: &'a Vec<Vec<TransactionModel>>, accounts: &'a Vec<Vec<AccountModel>>) -> Self {
+    pub fn new(blocks: &'a Vec<BlockModel>, transactions: &'a Vec<Vec<TransactionModel>>) -> Self {
         Self {
             blocks,
             transactions,
-            accounts
         }
     }
 }

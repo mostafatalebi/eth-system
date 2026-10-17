@@ -18,6 +18,14 @@ fn default_user_roles() -> Vec<String> {
     vec!["admin".to_string()]
 }
 
+fn default_redis_url() -> String {
+    "redis://127.0.0.1:6379".to_string()
+}
+
+fn default_redis_prefix() -> String {
+    "eth_app".to_string()
+}
+
 #[derive(Debug, Deserialize, Clone, Validate)]
 pub struct Config {
     // this gets overridden from args
@@ -33,6 +41,13 @@ pub struct Config {
 
     pub db_pg_url: String,
 
+    /// redis holds the refresh tokens
+    #[serde(default = "default_redis_url")]
+    pub redis_url: String,
+    /// prefix of every key this app writes to redis (without a trailing ':')
+    #[serde(default = "default_redis_prefix")]
+    pub redis_prefix: String,
+
     /// secret used to sign and verify JWTs (HS256); at least 32 characters
     #[serde(default = "default_jwt_secret")]
     pub jwt_secret: String,
@@ -45,14 +60,11 @@ pub struct Config {
     #[serde(deserialize_with = "deserialize_duration")]
     pub refresh_token_expiry: Duration,
 
-    /// when disabled, POST /api/auth/signup is not served; users can still
-    /// be created with --mode create-user
+    /// when disabled, POST /api/auth/signup is not served
     pub enable_http_signup: bool,
 
-    /// when enabled, --mode migration creates the default user below, but only
-    /// while the users table is still empty
-    #[serde(default)]
-    pub default_user_enabled: bool,
+    /// the user created by --mode create-default-user; the username and password
+    /// are required for that mode only
     #[serde(default)]
     pub default_user_username: String,
     #[serde(default)]
@@ -107,11 +119,12 @@ impl Default for Config {
             enable_http_service: true,
             http_bind_addr: "0.0.0.0:8080".to_string(),
             db_pg_url: "".to_string(),
+            redis_url: default_redis_url(),
+            redis_prefix: default_redis_prefix(),
             jwt_secret: default_jwt_secret(),
             access_token_expiry: Duration::from_secs(900),
             refresh_token_expiry: Duration::from_secs(7 * 24 * 3600),
             enable_http_signup: false,
-            default_user_enabled: false,
             default_user_username: "".to_string(),
             default_user_password: "".to_string(),
             default_user_roles: default_user_roles(),
@@ -148,12 +161,16 @@ impl Config {
 mod tests {
     use super::*;
 
-    // example.env ships the same dummy jwt_secret as the built-in default
+    // the committed template config.env.example has every required key and ships the default dummy jwt_secret
     #[test]
-    fn test_example_env_uses_the_default_jwt_secret() {
-        let line = include_str!("../../example.env").lines().find(|l| l.starts_with("jwt_secret=")).unwrap();
+    fn test_config_template_loads_with_the_default_jwt_secret() {
+        let template = include_str!("../../config.env.example").lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(key, value)| (key.to_string(), value.to_string()));
 
-        assert_eq!(line, format!("jwt_secret={DEFAULT_JWT_SECRET}"));
+        let config: Config = envy::from_iter(template).unwrap();
+
+        assert_eq!(config.jwt_secret, DEFAULT_JWT_SECRET);
         assert_eq!(Config::default().jwt_secret, DEFAULT_JWT_SECRET);
     }
 
@@ -176,21 +193,34 @@ mod tests {
         assert_eq!(config.jwt_secret, DEFAULT_JWT_SECRET);
     }
 
-    // the default user is off unless configured, and its roles are read as a comma separated list
+    // the default user is empty unless configured, and its roles are read as a comma separated list
     #[test]
     fn test_default_user_config() {
         let unset: Config = envy::from_iter(base_env()).unwrap();
         let mut env = base_env();
         env.extend([
-            ("DEFAULT_USER_ENABLED", "true"), ("DEFAULT_USER_USERNAME", "root"),
-            ("DEFAULT_USER_PASSWORD", "a-long-password"), ("DEFAULT_USER_ROLES", "admin,user"),
+            ("DEFAULT_USER_USERNAME", "root"), ("DEFAULT_USER_PASSWORD", "a-long-password"), ("DEFAULT_USER_ROLES", "admin,user"),
         ].map(|(k, v)| (k.to_string(), v.to_string())));
         let configured: Config = envy::from_iter(env).unwrap();
 
-        assert!(!unset.default_user_enabled);
+        assert_eq!(unset.default_user_username, "");
         assert_eq!(unset.default_user_roles, vec!["admin".to_string()]);
-        assert!(configured.default_user_enabled);
         assert_eq!(configured.default_user_username, "root");
+        assert_eq!(configured.default_user_password, "a-long-password");
         assert_eq!(configured.default_user_roles, vec!["admin".to_string(), "user".to_string()]);
+    }
+
+    // redis falls back to a local server and the eth_app prefix, and both can be configured
+    #[test]
+    fn test_redis_config() {
+        let unset: Config = envy::from_iter(base_env()).unwrap();
+        let mut env = base_env();
+        env.extend([("REDIS_URL", "redis://cache:6380"), ("REDIS_PREFIX", "staging")].map(|(k, v)| (k.to_string(), v.to_string())));
+        let configured: Config = envy::from_iter(env).unwrap();
+
+        assert_eq!(unset.redis_url, "redis://127.0.0.1:6379");
+        assert_eq!(unset.redis_prefix, "eth_app");
+        assert_eq!(configured.redis_url, "redis://cache:6380");
+        assert_eq!(configured.redis_prefix, "staging");
     }
 }

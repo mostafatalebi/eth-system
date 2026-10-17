@@ -3,13 +3,18 @@ use crate::auth::handlers::SignupRequest;
 use crate::auth::models::UserModel;
 use crate::auth::password::hash_password;
 use crate::auth::repository::UserRepository;
+use crate::config::config::Config;
 use crate::error::CoreError;
 
 const MAX_ROLE_LEN: usize = 32;
 
-/// creates a user with the given roles; used by --mode create-user, the only way to create users
-/// with roles other than the default ones
-pub async fn create_user_command<U: UserRepository>(users: &U, username: &str, password: String, roles: &[String]) -> Result<UserModel, CoreError> {
+/// creates the user described by the default_user_* config entries; used by --mode create-default-user,
+/// the only way to create a user with roles other than the default ones (users are never created automatically)
+pub async fn create_default_user<U: UserRepository>(users: &U, config: &Config) -> Result<UserModel, CoreError> {
+    create_user_command(users, &config.default_user_username, config.default_user_password.clone(), &config.default_user_roles).await
+}
+
+async fn create_user_command<U: UserRepository>(users: &U, username: &str, password: String, roles: &[String]) -> Result<UserModel, CoreError> {
     let request = SignupRequest::new(username, password);
     request.validate().map_err(|e| CoreError::ValidationFailed(e.to_string()))?;
     let roles = normalize_roles(roles)?;
@@ -93,6 +98,31 @@ mod tests {
 
         assert!(!users.get_user_by_username("alice").await.unwrap().unwrap().is_active);
         assert!(matches!(unknown, Err(CoreError::DbNotFound(_))));
+    }
+
+    // the user is built from the default_user_* config entries
+    #[tokio::test]
+    async fn test_create_default_user_reads_the_config() {
+        let users = MockUserRepository::new();
+        let mut config = Config::default();
+        config.default_user_username = "Root".to_string();
+        config.default_user_password = "a-long-password".to_string();
+
+        let user = create_default_user(&users, &config).await.unwrap();
+
+        assert_eq!(user.username, "root");
+        assert_eq!(user.roles, vec!["admin".to_string()]);
+    }
+
+    // without a configured username and password nothing is created
+    #[tokio::test]
+    async fn test_create_default_user_requires_a_configured_username_and_password() {
+        let users = MockUserRepository::new();
+
+        let result = create_default_user(&users, &Config::default()).await;
+
+        assert!(matches!(result, Err(CoreError::ValidationFailed(_))));
+        assert_eq!(users.len_users(), 0);
     }
 
     // creating the same username twice fails with UserAlreadyExists

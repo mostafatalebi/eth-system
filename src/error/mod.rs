@@ -53,6 +53,7 @@ pub enum CoreError {
     JwtFailed(String),
     Unauthorized(String),
     MigrationFailed(String),
+    RedisFailed(String),
 }
 
 
@@ -111,6 +112,7 @@ impl fmt::Display for CoreError {
             CoreError::JwtFailed(msg) => write!(f, "jwt error: {msg}"),
             CoreError::Unauthorized(msg) => write!(f, "unauthorized: {msg}"),
             CoreError::MigrationFailed(msg) => write!(f, "migration failed: {msg}"),
+            CoreError::RedisFailed(msg) => write!(f, "redis error: {msg}"),
             CoreError::ParentHashMismatch(h) => write!(f, "parent of block 0x{} is not stored", alloy::hex::encode(h)),
         }
     }

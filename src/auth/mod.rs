@@ -5,7 +5,7 @@ pub mod models;
 pub mod queries;
 pub mod repository;
 pub mod pg_repository;
+pub mod redis_repository;
 pub mod mock_repository;
 pub mod handlers;
 pub mod cli;
-pub mod seed;

@@ -4,7 +4,6 @@ use alloy::primitives::U256;
 use alloy::rpc::types::Block;
 use revm::bytecode::bitvec::ptr::Mut;
 use crate::error::CoreError;
-use crate::indexer::models::account::AccountModel;
 use crate::indexer::models::block::BlockModel;
 use crate::indexer::models::transaction::TransactionModel;
 use crate::indexer::repository::repository::{BlockData, BlockRepository};

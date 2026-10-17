@@ -32,8 +32,6 @@ impl IndexerHandlers {
             .route("/blocks/number/{number}", get(Self::get_block_by_number::<S, R>))
             // .route("/transactions/list", get(Self::get_list::<S, R>))
             // .route("/transactions/{{hash}}", get(Self::get_list::<S, R>))
-            // .route("/accounts/list", get(Self::get_list::<S, R>))
-            // .route("/accounts/{{address}}", get(Self::get_list::<S, R>))
             .with_state(app);
 
         let group = Router::new();

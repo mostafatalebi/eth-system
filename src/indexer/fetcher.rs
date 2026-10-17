@@ -8,7 +8,6 @@ use tracing::{error, info};
 use crate::error::CoreError;
 use crate::error::CoreError::ParentBlockNotFound;
 use crate::indexer::clients::eth::EthClient;
-use crate::indexer::models::account::AccountModel;
 use crate::indexer::models::block::BlockModel;
 use crate::indexer::models::transaction::TransactionModel;
 use crate::indexer::repository::repository::{BlockData, BlockRepository};
@@ -125,7 +124,6 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
         info!("starting indexer block processor");
         let mut block_models_list = Vec::new();
         let mut transactions_list: Vec<Vec<TransactionModel>> = Vec::new();
-        let mut accounts_list: Vec<Vec<AccountModel>> = Vec::new();
         // number of the block that must come next; None until the first block arrives
         let mut expected_block_number = start_block_number;
         loop {
@@ -150,14 +148,11 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
 
                     block_models_list.push(block_model.unwrap());
                     transactions_list.push(transaction_models?);
-                    // @todo accounts are not fetched yet; keep one (empty) list per block so the
-                    // three lists stay index-aligned, as upsert_blocks expects
-                    accounts_list.push(Vec::new());
                     expected_block_number = Some(block.header.number + 1);
                     let mut must_persist = true;
                     while must_persist {
                         if block_models_list.len() == self.config.db_persistence_batch_size {
-                            let res = self.repo.upsert_blocks(&BlockData::new(&block_models_list, &transactions_list, &accounts_list)).await;
+                            let res = self.repo.upsert_blocks(&BlockData::new(&block_models_list, &transactions_list)).await;
                             if let Err(CoreError::DbDuplicateBlockWithDifferentHash(_, incoming_hash, _)) = &res {
                                 let conflicting = block_models_list.iter().find(|b| &b.hash == incoming_hash).cloned()
                                     .ok_or(CoreError::BadArgument("conflicting block is not in the batch".to_string()))?;
@@ -166,13 +161,11 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
 
                                 let mut blocks = Vec::new();
                                 let mut txs = Vec::new();
-                                let mut accs = Vec::new();
                                 for b in &new_blocks {
                                     blocks.push(BlockModel::new_from_rpc_block(b)?);
                                     txs.push(Self::transaction_models_of_block(b)?);
-                                    accs.push(Vec::new());
                                 }
-                                self.repo.replace_chain_above(ancestor, &BlockData::new(&blocks, &txs, &accs)).await?;
+                                self.repo.replace_chain_above(ancestor, &BlockData::new(&blocks, &txs)).await?;
                                 continue;
                             } else if res.as_ref().is_err() {
                                 error!("error on upserting blocks: {:?}", res);
@@ -183,7 +176,6 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
                             must_persist = false;
                             block_models_list.truncate(0);
                             transactions_list.truncate(0);
-                            accounts_list.truncate(0);
                         } else {
                             break
                         }
@@ -192,7 +184,7 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
 
                 _ = self.cancellation.cancelled() => {
                     if block_models_list.len() > 0 {
-                            let res = self.repo.upsert_blocks(&BlockData::new(&block_models_list, &transactions_list, &accounts_list)).await;
+                            let res = self.repo.upsert_blocks(&BlockData::new(&block_models_list, &transactions_list)).await;
                             if res.is_err() {
                                 error!("error on upserting blocks: {:?}", res);
                                 // must retry
@@ -201,7 +193,6 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
                             }
                             block_models_list.truncate(0);
                             transactions_list.truncate(0);
-                            accounts_list.truncate(0);
                     }
                     return Ok(());
                 }

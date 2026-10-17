@@ -9,7 +9,7 @@ use serde::Deserialize;
 use tokio::time::{sleep_until, Instant};
 use tracing::{error, info};
 use crate::app::app::{App};
-use crate::auth::cli::{create_user_command, disable_user_command};
+use crate::auth::cli::{create_default_user, disable_user_command};
 use crate::auth::pg_repository::PgUserRepository;
 use crate::db::storage::{AppStorage, InMemoryStorage};
 use crate::error::CoreError;
@@ -78,8 +78,8 @@ impl Cmd {
             AppMode::Migration => {
                 app.migrate().await?;
             },
-            AppMode::CreateUser => {
-                self.run_create_user(app).await?;
+            AppMode::CreateDefaultUser => {
+                self.run_create_default_user(app).await?;
             },
             AppMode::DisableUser => {
                 self.run_disable_user(app).await?;
@@ -97,26 +97,16 @@ impl Cmd {
         Ok(())
     }
 
-    async fn run_create_user(&self, app: Arc<App<impl AppStorage, impl BlockRepository+Clone>>) -> Result<(), CoreError> {
-        let username = self.args.username.clone()
-            .ok_or(CoreError::BadArgument("--username is required in create-user mode".to_string()))?;
-        let password = rpassword::prompt_password("Password: ")
-            .map_err(|e| CoreError::Internal(Box::new(e)))?;
-        let confirmation = rpassword::prompt_password("Confirm password: ")
-            .map_err(|e| CoreError::Internal(Box::new(e)))?;
-        if password != confirmation {
-            return Err(CoreError::BadArgument("passwords do not match".to_string()));
-        }
-
+    async fn run_create_default_user(&self, app: Arc<App<impl AppStorage, impl BlockRepository+Clone>>) -> Result<(), CoreError> {
         let db = app.persistence.clone().ok_or(CoreError::Empty("database is not initialized".to_string()))?;
-        let user = create_user_command(&PgUserRepository::new(db), &username, password, &self.args.roles).await?;
-        info!("created user {} with roles {:?}", user.username, user.roles);
+        let user = create_default_user(&PgUserRepository::new(db), &app.config).await?;
+        info!("created default user {} with roles {:?}", user.username, user.roles);
         Ok(())
     }
 
     pub fn run_http_server(&self, app: Arc<App<impl AppStorage+'static, impl BlockRepository+Clone>>) {
         _ = tokio::spawn(async move {
-            let router = match get_router(app.clone()) {
+            let router = match get_router(app.clone()).await {
                 Ok(router) => router,
                 Err(e) => {
                     error!("failed to build http router: {}", e);
@@ -151,7 +141,7 @@ pub enum AppMode {
     Simulator,
     Indexer,
     Migration,
-    CreateUser,
+    CreateDefaultUser,
     DisableUser,
 }
 
@@ -162,12 +152,9 @@ pub struct CmdArgs {
     pub mode: AppMode,
     #[arg(long)]
     pub config: String,
-    /// [create-user, disable-user] username of the user; for create-user the password is asked for interactively
+    /// [disable-user] username of the user to disable
     #[arg(long)]
     pub username: Option<String>,
-    /// [create-user] comma separated roles of the user to create
-    #[arg(long, value_delimiter = ',', default_value = "user")]
-    pub roles: Vec<String>,
 }
 
 impl FromStr for AppMode {
@@ -185,6 +172,6 @@ impl FromStr for AppMode {
 
 impl PartialEq for AppMode {
     fn eq(&self, other: &Self) -> bool {
-        matches!((self, other), (AppMode::Simulator, AppMode::Simulator) | (AppMode::Indexer, AppMode::Indexer) | (AppMode::Migration, AppMode::Migration) | (AppMode::CreateUser, AppMode::CreateUser) | (AppMode::DisableUser, AppMode::DisableUser))
+        matches!((self, other), (AppMode::Simulator, AppMode::Simulator) | (AppMode::Indexer, AppMode::Indexer) | (AppMode::Migration, AppMode::Migration) | (AppMode::CreateDefaultUser, AppMode::CreateDefaultUser) | (AppMode::DisableUser, AppMode::DisableUser))
     }
 }
