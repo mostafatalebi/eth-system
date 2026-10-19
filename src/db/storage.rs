@@ -59,7 +59,7 @@ impl AppStorage for InMemoryStorage {
         let s = self.storage.read().unwrap();
         let item = s.get(&tx);
 
-        Ok(Some(item.unwrap().clone()))
+        Ok(item.cloned())
     }
 
     fn get_list(&self) -> Result<Option<Vec<B256>>, CoreError> {
@@ -67,8 +67,6 @@ impl AppStorage for InMemoryStorage {
             return Ok(None)
         }
         let mut response_list: Vec<B256> = Vec::new();
-        let s = self.storage.read().unwrap();
-        let mut i = 1;
         for (_, v) in self.indexes.read().unwrap().iter() {
             response_list.push(v.clone())
         }
@@ -82,5 +80,15 @@ pub async fn dispatch_storage_worker(mut storage: Arc<impl AppStorage>, mut rc: 
         if let Err(e) =storage.insert_transaction(tx_model.clone()) {
             error!(error = %e, tx = %(tx_model.tx.tx_hash()), "failed to insert transaction" );
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_unknown_transaction_returns_none() {
+        let storage = InMemoryStorage::new();
+        assert!(storage.get_transaction(B256::ZERO).unwrap().is_none());
     }
 }

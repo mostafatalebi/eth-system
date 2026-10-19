@@ -88,6 +88,11 @@ impl BlockRepository for MockRepository {
         });
         Ok(found.cloned())
     }
+    async fn list_blocks(&self, limit: i64, offset: i64) -> Result<Vec<BlockModel>, CoreError> {
+        let mut blocks = self.inner.lock().unwrap().blocks.clone();
+        blocks.sort_by(|a, b| b.number.cmp(&a.number));
+        Ok(blocks.into_iter().skip(offset as usize).take(limit as usize).collect())
+    }
     async fn replace_chain_above(&self, ancestor_number: i64, new_chain: &BlockData<'_>) -> Result<(), CoreError> {
         let mut inner = self.inner.lock().unwrap();
         inner.blocks.retain(|b| b.number <= ancestor_number);

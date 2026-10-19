@@ -49,13 +49,18 @@ impl SimulatorHandlers {
             api_response.set_error(err_r);
             return api_response;
         }
-        let tx_hash: B256 = params.id.parse().unwrap();
-        let res = app.app_storage().get_transaction(tx_hash);
-        if res.is_err() {
-            return ApiResponse::for_error(res.err().unwrap().to_string())
+        let Ok(tx_hash) = params.id.parse::<B256>() else {
+            let mut err_r = ErrorResponse::new("validation error".to_string());
+            err_r.add_field_error("id".into(), "id must be a hex encoded Ethereum transaction hash".into());
+            api_response.set_status_code(StatusCode::BAD_REQUEST);
+            api_response.set_error(err_r);
+            return api_response;
+        };
+        match app.app_storage().get_transaction(tx_hash) {
+            Err(e) => ApiResponse::for_error(e.to_string()),
+            Ok(None) => ApiResponse::not_found(format!("Transaction {} not found", params.id)),
+            Ok(Some(tx)) => ApiResponse::for_success(Some(tx)),
         }
-        let res = res.unwrap();
-        return ApiResponse::for_success(res);
     }
     pub async fn get_list<S: AppStorage, R: BlockRepository+Clone>(State(app) : State<Arc<App<S, R>>>)
         -> ApiResponse<Vec<B256>> {

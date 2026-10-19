@@ -19,6 +19,8 @@ pub trait BlockRepository: Send + Sync + 'static {
     fn block_exists(&self, number: i64, hash: &Vec<u8>, parent_hash: &Vec<u8>) -> impl Future<Output = Result<bool, CoreError>> + Send;
 
     fn get_block(&self, hash: Option<Vec<u8>>, number: Option<i64>) -> impl Future<Output = Result<Option<BlockModel>, CoreError>> + Send;
+    /// returns blocks ordered by number, newest first
+    fn list_blocks(&self, limit: i64, offset: i64) -> impl Future<Output = Result<Vec<BlockModel>, CoreError>> + Send;
     fn get_block_by_parent_hash(&self, p_hash: Vec<u8>) -> impl Future<Output = Result<Option<BlockModel>, CoreError>> + Send;
 
     fn replace_chain_above(&self, ancestor_number: i64, new_chain: &BlockData) -> impl Future<Output = Result<(), CoreError>> + Send;

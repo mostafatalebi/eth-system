@@ -228,7 +228,23 @@
               ]
             },
             "description": "Lists indexed blocks."
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 and a non-empty block list', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d).to.be.an('array').that.is.not.empty;",
+                  "    pm.expect(d[0].number).to.be.at.least(d[d.length - 1].number);",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Get block by number",
@@ -249,7 +265,21 @@
               ]
             },
             "description": "A non-negative block number."
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 and the requested block', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().data.number).to.eql(Number(pm.variables.get('block_number')));",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Get block by hash",
@@ -270,7 +300,21 @@
               ]
             },
             "description": "A 32-byte hash as hex, with or without the 0x prefix."
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 and a block', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().data).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -294,7 +338,18 @@
               ]
             },
             "description": "Lists the hashes of simulated transactions."
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Get transaction",
@@ -319,7 +374,18 @@
               ]
             },
             "description": "Returns the execution result of a simulated transaction."
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unknown transaction is 404, not 500', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

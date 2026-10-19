@@ -155,6 +155,13 @@ impl BlockRepository for PgBlockRepository {
         Ok(Some(bm))
     }
 
+    async fn list_blocks(&self, limit: i64, offset: i64) -> Result<Vec<BlockModel>, CoreError> {
+        let pg = self.db.pg().await?;
+        let rows = pg.query("select * from blocks order by number desc limit $1 offset $2", &[&limit, &offset]).await
+            .map_err(|e| CoreError::DbQueryFailed(e.to_string()))?;
+        Ok(rows.iter().map(BlockModel::new_from_db_row).collect())
+    }
+
     async fn replace_chain_above(&self, ancestor_number: i64, new_chain: &BlockData<'_>) -> Result<(), CoreError> {
         let mut pg = self.db.pg().await?;
         let tx = pg.build_transaction().isolation_level(IsolationLevel::RepeatableRead).start().await

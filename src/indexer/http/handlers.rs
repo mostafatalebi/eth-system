@@ -13,13 +13,17 @@ use crate::http_server::response::{ApiResponse, ErrorResponse};
 use crate::indexer::models::block::BlockModel;
 
 #[derive(Deserialize, Validate)]
-pub struct TxListParams {
-    #[validate(length(min = 64, max=66, message = "id must be a correct Ethereum transaction hash"))]
-    id: String,
+pub struct ListParams {
+    #[serde(default = "default_limit")]
+    #[validate(range(min = 1, max = 100, message = "limit must be between 1 and 100"))]
+    limit: i64,
+    #[serde(default)]
+    #[validate(range(min = 0, message = "offset must not be negative"))]
+    offset: i64,
 }
 
-#[derive(Deserialize, Serialize)]
-pub struct TxResponse {
+fn default_limit() -> i64 {
+    20
 }
 
 pub struct IndexerHandlers;
@@ -85,14 +89,25 @@ impl IndexerHandlers {
         api_response
     }
 
-
-    pub async fn get_list<S: AppStorage, R: BlockRepository+Clone>(State(app) : State<Arc<App<S, R>>>)
-        -> ApiResponse<Vec<B256>> {
-        let res = app.app_storage().get_list();
-        if res.is_err() {
-            return ApiResponse::for_error(res.err().unwrap().to_string())
+    /// GET /indexer/blocks/list?limit=&offset=; newest blocks first
+    pub async fn get_list<S: AppStorage, R: BlockRepository+Clone>(State(app) : State<Arc<App<S, R>>>, Query(params): Query<ListParams>)
+        -> ApiResponse<Vec<BlockModel>> {
+        if let Err(e) = params.validate() {
+            let mut err_r = ErrorResponse::new("validation error".to_string());
+            e.field_errors().iter().for_each(|k| {
+                err_r.add_field_error(k.0.to_string(), (*k.1).to_vec().get(0).unwrap().to_string());
+            });
+            let mut api_response = ApiResponse::default();
+            api_response.set_status_code(StatusCode::BAD_REQUEST);
+            api_response.set_error(err_r);
+            return api_response;
         }
-        let res = res.unwrap();
-        return ApiResponse::for_success(res);
+        let Some(repo) = app.block_repository.as_ref() else {
+            return ApiResponse::for_error("block repository is not set".to_string());
+        };
+        match repo.list_blocks(params.limit, params.offset).await {
+            Err(e) => ApiResponse::for_error(e.to_string()),
+            Ok(blocks) => ApiResponse::for_success(Some(blocks)),
+        }
     }
 }
