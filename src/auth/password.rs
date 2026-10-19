@@ -21,12 +21,9 @@ pub async fn hash_password(password: String) -> Result<String, CoreError> {
 pub async fn verify_password(password: String, stored_hash: Option<String>) -> Result<bool, CoreError> {
     tokio::task::spawn_blocking(move || {
         let known_user = stored_hash.is_some();
-        let hash = match stored_hash {
-            Some(hash) => hash,
-            None => DUMMY_HASH.get_or_init(|| {
-                Argon2::default().hash_password(b"dummy password for timing").map(|h| h.to_string()).unwrap_or_default()
-            }).clone(),
-        };
+        let hash = stored_hash.unwrap_or_else(|| DUMMY_HASH.get_or_init(|| {
+            Argon2::default().hash_password(b"dummy password for timing").map(|h| h.to_string()).unwrap_or_default()
+        }).clone());
         match Argon2::default().verify_password(password.as_bytes(), hash.as_str()) {
             Ok(()) => Ok(known_user),
             Err(HashError::PasswordInvalid) => Ok(false),
