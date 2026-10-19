@@ -21,6 +21,13 @@ create table transactions (
     r bytea NOT NULL check ( octet_length(r) = 32 ),
     s bytea NOT NULL check ( octet_length(s) = 32 ),
     y_parity boolean DEFAULT NULL,
+    -- from the transaction receipt (eth_getBlockReceipts)
+    receipt_status boolean DEFAULT NULL,
+    receipt_gas_used bigint DEFAULT NULL,
+    receipt_effective_gas_price numeric(78, 0) DEFAULT NULL,
+    receipt_contract_address bytea DEFAULT NULL check ( octet_length(receipt_contract_address) = 20 ),
+    receipt_blob_gas_used bigint DEFAULT NULL,
+    receipt_blob_gas_price numeric(78, 0) DEFAULT NULL,
     created_at timestamp NOT NULL DEFAULT NOW(),
     updated_at timestamp NOT NULL DEFAULT NOW(),
     unique (block_hash, transaction_index)
