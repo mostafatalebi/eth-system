@@ -1,10 +1,8 @@
 use std::future::Future;
 use alloy::eips::BlockNumberOrTag;
 use alloy::primitives::B256;
-use alloy::providers::{ProviderBuilder, WsConnect};
 use alloy::rpc::client::{ClientBuilder, RpcClient};
 use alloy::rpc::types::{Block, TransactionReceipt};
-use clap::builder::Str;
 use crate::error::CoreError;
 
 pub trait EthClient {
@@ -16,6 +14,7 @@ pub trait EthClient {
 
     /// returns the receipts of every transaction of the block, in transaction order;
     /// asking by hash makes a block replaced by a reorg fail instead of returning another block's receipts
+    #[allow(dead_code)] // used by the fetcher once receipts are stored
     fn get_block_receipts(&self, hash: B256) -> impl Future<Output = Result<Vec<TransactionReceipt>, CoreError>> + Send;
 }
 

@@ -12,7 +12,7 @@ where
         Ok(d) => {
             return Ok(d)
         },
-        Err(e) => {
+        Err(_e) => {
             return Err(D::Error::custom("cannot deserialize duration"));
         }
     }

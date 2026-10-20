@@ -1,11 +1,6 @@
-use std::ops::Deref;
 use std::sync::{Arc, Mutex};
-use alloy::primitives::U256;
-use alloy::rpc::types::Block;
-use revm::bytecode::bitvec::ptr::Mut;
 use crate::error::CoreError;
 use crate::indexer::models::block::BlockModel;
-use crate::indexer::models::transaction::TransactionModel;
 use crate::indexer::repository::repository::{BlockData, BlockRepository};
 
 
@@ -17,7 +12,6 @@ pub struct MockRepository {
 
 
 pub struct MockRepositoryInner {
-    block_number: u64,
     blocks: Vec<BlockModel>,
     expected_upsert_error: Option<CoreError>,
 }
@@ -26,7 +20,7 @@ pub struct MockRepositoryInner {
 impl MockRepository {
     pub fn new() -> MockRepository {
         Self {
-            inner: Arc::new(Mutex::new(MockRepositoryInner{block_number: 0,
+            inner: Arc::new(Mutex::new(MockRepositoryInner{
             blocks: vec![],
             expected_upsert_error: None})),
         }
@@ -74,10 +68,10 @@ impl BlockRepository for MockRepository {
     }
 
     async fn last_block_number(&self) -> Result<Option<u64>, CoreError> {
-        todo!()
+        Ok(self.inner.lock().unwrap().blocks.iter().map(|b| b.number as u64).max())
     }
 
-    async fn block_exists(&self, number: i64, hash: &Vec<u8>, parent_hash: &Vec<u8>) -> Result<bool, CoreError> {
+    async fn block_exists(&self, _number: i64, _hash: &Vec<u8>, _parent_hash: &Vec<u8>) -> Result<bool, CoreError> {
         Ok(true)
     }
 
@@ -104,7 +98,7 @@ impl BlockRepository for MockRepository {
         Ok(self.inner.lock().unwrap().blocks.iter().any(|b| b.hash == hash))
     }
 
-    async fn is_block_finalized(&self, number: i64) -> Result<bool, CoreError> {
+    async fn is_block_finalized(&self, _number: i64) -> Result<bool, CoreError> {
         Ok(false)
     }
 
@@ -112,7 +106,7 @@ impl BlockRepository for MockRepository {
         Ok(None)
     }
 
-    async fn get_block_by_parent_hash(&self, p_hash: Vec<u8>) -> Result<Option<BlockModel>, CoreError> {
+    async fn get_block_by_parent_hash(&self, _p_hash: Vec<u8>) -> Result<Option<BlockModel>, CoreError> {
         Ok(None)
     }
 }

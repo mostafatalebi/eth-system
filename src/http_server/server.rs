@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use axum::Router;
 use crate::app::app::{App};
-use crate::db::storage::{AppStorage, InMemoryStorage};
+use crate::db::storage::AppStorage;
 use crate::indexer::repository::repository::BlockRepository;
 
 pub struct HttpServer<S: AppStorage, R: BlockRepository+Clone> {

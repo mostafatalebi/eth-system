@@ -1,12 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
-use alloy::primitives::{B256, U256};
+use alloy::primitives::B256;
 use alloy::rpc::types::{Block, BlockTransactions};
-use futures_util::SinkExt;
 use tokio::sync::mpsc::Receiver;
 use tracing::{error, info};
 use crate::error::CoreError;
-use crate::error::CoreError::ParentBlockNotFound;
 use crate::indexer::clients::eth::EthClient;
 use crate::indexer::models::block::BlockModel;
 use crate::indexer::models::transaction::TransactionModel;
@@ -17,7 +15,6 @@ pub struct FetchConfig {
     ws_url: String,
     rpc_fetch_batch_size: u64,
     db_persistence_batch_size: usize,
-    blocks_tbl_name: String
 }
 
 impl FetchConfig {
@@ -25,7 +22,6 @@ impl FetchConfig {
         Self {
             ws_url: String::new(),
             rpc_fetch_batch_size: 0,
-            blocks_tbl_name: "".to_string(),
             db_persistence_batch_size: 5,
         }
     }
@@ -36,10 +32,6 @@ impl FetchConfig {
 
     pub fn set_batch_size(&mut self, batch_size: u64) {
         self.rpc_fetch_batch_size = batch_size;
-    }
-
-    pub fn set_blocks_tbl_name(&mut self, blocks_tbl_name: String) {
-        self.blocks_tbl_name = blocks_tbl_name;
     }
 }
 
@@ -63,10 +55,8 @@ impl<R: BlockRepository, C: EthClient> Fetcher<R, C> {
             inner: Arc::new(FetcherInner::new(config, repo, client, cancellation))
         }
     }
-    pub fn new_with_fi(inner: Arc<FetcherInner<R, C>>) -> Self {
-        Self { inner }
-    }
 
+    #[cfg(test)]
     pub async fn listen_to_incoming_blocks(&self, in_chan: Receiver<Block>) -> Result<(), CoreError> {
         self.inner.block_processor(None, in_chan).await
     }
@@ -101,7 +91,7 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
     /// It returns last processed block number
     pub async fn block_fetcher(&self, start_block: Option<u64>, out_chan: tokio::sync::mpsc::Sender<Block>) -> Result<u64,CoreError> {
         info!("starting block fetcher");
-        let mut last_block_number = start_block;
+        let last_block_number = start_block;
         let blocks = self.client.get_blocks(last_block_number, self.config.rpc_fetch_batch_size).await?;
         let num_of_fetched_blocks = blocks.len();
 
@@ -198,7 +188,6 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
                 }
             }
         }
-        Ok(())
     }
 
     async fn find_common_ancestor(&self, conflicting: &BlockModel) -> Result<(i64, Vec<Block>), CoreError> {
@@ -240,34 +229,25 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
 
 #[cfg(test)]
 mod tests {
-    use std::thread::sleep;
-    use alloy::providers::ProviderBuilder;
     use alloy::rpc::types::{BlockTransactions, Header};
     use super::*;
-    use alloy::transports::mock::Asserter;
-    use clap::Parser;
-    use deadpool_postgres::GenericClient;
-    use crate::app::cmd::CmdArgs;
-    use crate::config::config::Config;
     use crate::db::db::DbFactory;
-    use crate::db::db::DbType::Postgres;
     use crate::indexer::clients::eth_mock::EthereumMockClient;
-    use crate::indexer::repository::mock_repository::{MockRepository, MockRepositoryInner};
-    use crate::indexer::repository::pg_repository::PgBlockRepository;
+    use crate::indexer::repository::mock_repository::MockRepository;
     use crate::indexer::types::mocks::{mock_block_with_parent, mock_blocks_list};
 
     #[tokio::test]
     pub async fn test_fetching_blocks() {
         let mut eth_mock = EthereumMockClient::new();
         let mut blocks: Vec<Option<Block>> = mock_blocks_list(10, 1);
-        let mut block_tx = BlockTransactions::Full(Default::default());
+        let block_tx = BlockTransactions::Full(Default::default());
         let b1 = Some(Block::new(Header::new(alloy::consensus::Header::default()), block_tx));
         blocks.push(b1);
         let result = Ok(blocks);
         eth_mock.set_response(result);
 
         let cnf = FetchConfig::new();
-        let db = DbFactory::default();
+        let _db = DbFactory::default();
         let repo = MockRepository::new();
         let cancellation = tokio_util::sync::CancellationToken::new();
         let fetcher = Fetcher::new(cnf, repo.clone(), eth_mock, cancellation.clone());
@@ -403,6 +383,12 @@ mod tests {
     #[cfg(feature = "integration-tests")]
     #[tokio::test]
     pub async fn test_fetching_blocks_with_db() {
+        use crate::config::config::Config;
+        use crate::db::db::DbType::Postgres;
+        use crate::db::test_support::DB_LOCK;
+        use crate::indexer::repository::pg_repository::PgBlockRepository;
+
+        let _guard = DB_LOCK.lock().await;
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
         let mut eth_mock = EthereumMockClient::new();
         let mut blocks: Vec<Option<Block>> = mock_blocks_list(10, 1);
@@ -420,7 +406,7 @@ mod tests {
         let app_config = app_config.unwrap();
         assert_ne!(app_config.db_pg_url, "");
         let db = Arc::new(DbFactory::connect(&app_config.db_pg_url, Postgres).await.unwrap());
-        let mut client = db.pg().await.map_err(|e|{
+        let client = db.pg().await.map_err(|e|{
             CoreError::DbConnFailed(e.to_string())
         });
         assert_eq!(client.is_err(), false, "DB connection error");
@@ -451,13 +437,17 @@ mod tests {
         });
 
 
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        // wait until the processor has persisted the blocks instead of sleeping a fixed time
+        let mut count: i64 = 0;
+        for _ in 0..100 {
+            let row = client.query_one("select count(*) as count from blocks", &[]).await.unwrap();
+            count = row.get("count");
+            if count == 10 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         cancel2.cancel();
-
-
-        let row = client.query_one("select count(*) as count from blocks", &[]).await.unwrap();
-        let count: i64 = row.get("count");
-        println!("count: {}", count);
         assert_eq!(count, 10, "expected 10 blocks persisted, found {}", count);
     }
 }

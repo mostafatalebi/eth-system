@@ -1,4 +1,3 @@
-use std::string::ToString;
 
 // we know this changes based on a number
 // of factors (calldata, contract creation etc.)

@@ -1,8 +1,4 @@
-use alloy::consensus::TxEnvelope;
-use alloy::rpc::types::Transaction;
-use revm::primitives::U256;
 use std::future::Future;
-use alloy::signers::k256::elliptic_curve::consts::U25;
 use crate::error::CoreError;
 use crate::indexer::models::block::BlockModel;
 use crate::indexer::models::transaction::TransactionModel;

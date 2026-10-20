@@ -1,12 +1,10 @@
 use alloy::consensus::BlockHeader;
 use alloy::rpc::types::Block;
 use chrono::NaiveDateTime;
-use num_bigint::BigUint;
 use serde::{Deserialize, Serialize};
 use tokio_postgres::Row;
 use tokio_postgres::types::ToSql;
 use crate::error::CoreError;
-use crate::indexer::types::SqlNumeric;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockModel {

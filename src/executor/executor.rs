@@ -12,7 +12,6 @@ use tracing::{error, info};
 use crate::common::constants::MIN_GAS_LIMIT;
 use crate::common::helpers::{alloy_tx_to_revm_tx, validate_balance, validate_nonce, validate_tx_signature};
 use crate::db::models::TxExecModel;
-use crate::mem::pool::MemPool;
 
 pub struct Executor<N: Network, P: Provider<N> + Clone> {
     provider: P,

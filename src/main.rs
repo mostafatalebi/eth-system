@@ -1,5 +1,4 @@
 
-use tracing_subscriber::EnvFilter;
 use app::cmd::{Cmd};
 
 pub mod subscriber;
@@ -11,7 +10,6 @@ pub mod config;
 pub mod error;
 pub mod executor;
 pub mod common;
-mod mem;
 mod indexer;
 pub mod migrations;
 

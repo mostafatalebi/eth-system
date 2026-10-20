@@ -1,12 +1,9 @@
 use std::cmp::PartialEq;
-use std::fmt::format;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
-use alloy::providers::{Provider, ProviderBuilder, WsConnect};
+use alloy::providers::{ProviderBuilder, WsConnect};
 use clap::{Error, Parser, ValueEnum};
 use serde::Deserialize;
-use tokio::time::{sleep_until, Instant};
 use tracing::{error, info};
 use crate::app::app::{App};
 use crate::auth::cli::{create_default_user, disable_user_command};

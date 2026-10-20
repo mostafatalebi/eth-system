@@ -1,8 +1,6 @@
-mod block_error;
 
 use std::error::Error;
 use std::fmt;
-use revm::primitives::{B256, U256};
 
 // @todo we need to split this enum into several other modules (such as DbError etc.)
 #[derive(Debug)]

@@ -1,6 +1,5 @@
-use std::sync::Arc;
 use deadpool_postgres::{PoolConfig, Runtime};
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::NoTls;
 use crate::error::CoreError;
 
 pub struct Pg {}

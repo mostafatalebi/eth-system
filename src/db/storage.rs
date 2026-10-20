@@ -1,15 +1,8 @@
-use std::any::Any;
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::hash::Hash;
-use std::ops::Index;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use alloy::network::TransactionResponse;
 use alloy::primitives::B256;
-use redb::{Database, TableDefinition};
-use revm::context::TxEnv;
-use revm::primitives::U256;
-use tokio_postgres::types::IsNull::No;
 use tracing::error;
 use crate::db::models::TxExecModel;
 use crate::error::CoreError;
@@ -75,7 +68,7 @@ impl AppStorage for InMemoryStorage {
 }
 
 
-pub async fn dispatch_storage_worker(mut storage: Arc<impl AppStorage>, mut rc: tokio::sync::mpsc::Receiver<TxExecModel>) {
+pub async fn dispatch_storage_worker(storage: Arc<impl AppStorage>, mut rc: tokio::sync::mpsc::Receiver<TxExecModel>) {
     while let Some(tx_model) = rc.recv().await {
         if let Err(e) =storage.insert_transaction(tx_model.clone()) {
             error!(error = %e, tx = %(tx_model.tx.tx_hash()), "failed to insert transaction" );

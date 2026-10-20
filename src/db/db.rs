@@ -1,6 +1,4 @@
-use std::sync::Arc;
 use deadpool_postgres::Object;
-use tokio_postgres::Client;
 use crate::db::pg::pg::Pg;
 use crate::error::CoreError;
 

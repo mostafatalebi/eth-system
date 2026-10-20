@@ -1,16 +1,13 @@
 use std::ops::DerefMut;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use alloy::eips::{BlockId};
-use alloy::network::{Network};
 use alloy::providers::{Identity, Provider, ProviderBuilder, RootProvider, WsConnect};
 use alloy::providers::fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller};
-use refinery::embed_migrations;
 use revm::database::{AlloyDB, CacheDB, WrapDatabaseAsync};
 use tokio_util::sync::CancellationToken;
 use tracing::{info};
-use tracing_subscriber::util::SubscriberInitExt;
 use crate::app::cmd::{CmdArgs};
-use crate::app::cmd::AppMode::{Migration, Simulator};
+use crate::app::cmd::AppMode::Simulator;
 use crate::config::config::Config;
 use crate::db::db::{DbFactory, DbType};
 use crate::db::models::TxExecModel;
@@ -96,7 +93,7 @@ impl<S: AppStorage, R: BlockRepository+Clone> App<S, R> {
             return Err(CoreError::FailedToFetchBlockNumber(block_number.err().unwrap().to_string()));
         }
         let alloy_db = WrapDatabaseAsync::new(AlloyDB::new(self.provider.clone().unwrap(), BlockId::from(block_number.unwrap())));
-        let mut exec = Executor::new(self.provider.clone().unwrap(), CacheDB::new(alloy_db.unwrap()),  tx_rc, storage_sn).await;
+        let exec = Executor::new(self.provider.clone().unwrap(), CacheDB::new(alloy_db.unwrap()),  tx_rc, storage_sn).await;
         if exec.is_err() {
             return Err(exec.err().unwrap());
         }

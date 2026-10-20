@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use alloy::primitives::U256;
 use tokio_postgres::{IsolationLevel, Statement, Transaction};
 use tokio_postgres::error::SqlState;
 use tokio_postgres::types::ToSql;
@@ -130,7 +129,7 @@ impl BlockRepository for PgBlockRepository {
 
     async fn get_block(&self, hash: Option<Vec<u8>>, number: Option<i64>) -> Result<Option<BlockModel>, CoreError> {
         let pg = self.db.pg().await?;
-        let mut where_clause = "";
+        let where_clause;
         let mut bindings: Vec<&(dyn ToSql+Sync)> = Vec::new();
         if hash.is_some() && number.is_some() {
             where_clause = "hash=$1 AND number=$2";
@@ -272,9 +271,8 @@ mod tests {
     use alloy::rpc::types::Block;
     use crate::config::config::Config;
     use crate::db::db::DbType::Postgres;
+    use crate::db::test_support::DB_LOCK;
     use crate::indexer::types::mocks::{mock_block_with_parent, mock_blocks_list};
-
-    static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     async fn setup() -> (PgBlockRepository, Arc<DbFactory>, tokio::sync::MutexGuard<'static, ()>) {
         let guard = DB_LOCK.lock().await;
@@ -284,7 +282,7 @@ mod tests {
         let mut client = db.pg().await.unwrap();
         crate::migrations::migration_runner::migrations::runner()
             .run_async(std::ops::DerefMut::deref_mut(std::ops::DerefMut::deref_mut(&mut client))).await.unwrap();
-        client.batch_execute("truncate blocks, transactions").await.unwrap();
+        client.batch_execute("truncate blocks, transactions, logs").await.unwrap();
         (PgBlockRepository::new(db.clone()), db, guard)
     }
 
