@@ -37,8 +37,8 @@ pub struct LogModel {
     pub topic2: Option<Vec<u8>>,
     #[serde(serialize_with = "serialize_optional_hex")]
     pub topic3: Option<Vec<u8>>,
-    #[serde(serialize_with = "serialize_hex")]
-    pub data: Vec<u8>,
+    /// the non-indexed data of the log; {"raw": "0x…"} for an event that has not been decoded
+    pub data_json: serde_json::Value,
 }
 
 impl LogModel {
@@ -54,7 +54,7 @@ impl LogModel {
             topic1: row.get("topic1"),
             topic2: row.get("topic2"),
             topic3: row.get("topic3"),
-            data: row.get("data"),
+            data_json: row.get("data_json"),
         }
     }
 
@@ -83,7 +83,7 @@ impl LogModel {
             topic1: topic(1),
             topic2: topic(2),
             topic3: topic(3),
-            data: log.data().data.to_vec(),
+            data_json: serde_json::json!({ "raw": format!("0x{}", alloy::hex::encode(&log.data().data)) }),
         })
     }
 
@@ -91,7 +91,7 @@ impl LogModel {
     pub fn get_prepared_values(&self) -> Vec<&(dyn ToSql + Sync)> {
         vec![
             &self.block_hash, &self.block_number, &self.tx_hash, &self.tx_index, &self.log_index, &self.address,
-            &self.topic0, &self.topic1, &self.topic2, &self.topic3, &self.data,
+            &self.topic0, &self.topic1, &self.topic2, &self.topic3, &self.data_json,
         ]
     }
 }
@@ -124,7 +124,7 @@ mod tests {
         assert_eq!(log.log_index, 3);
         assert_eq!(log.tx_index, 0);
         assert_eq!(log.address, vec![0xaa; 20]);
-        assert_eq!(log.data, vec![0x00, 0xff]);
+        assert_eq!(log.data_json, serde_json::json!({ "raw": "0x00ff" }));
         assert_eq!(log.topic0.as_ref().unwrap().len(), 32);
     }
 

@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(log_positions(&body), vec![(2, 0), (1, 4), (1, 3), (1, 2), (1, 1), (1, 0)]);
         let log = &body["data"][0];
         assert_eq!(log["address"], format!("0x{}", "aa".repeat(20)));
-        assert_eq!(log["data"], "0x00ff");
+        assert_eq!(log["data_json"], serde_json::json!({ "raw": "0x00ff" }));
         // a log without topics has all four as null
         assert!(log["topic0"].is_null());
         // log 4 of block 1 has four topics, each a 0x-prefixed 32-byte hex string
