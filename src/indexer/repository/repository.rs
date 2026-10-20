@@ -20,6 +20,8 @@ pub trait BlockRepository: Send + Sync + 'static {
     fn list_blocks(&self, limit: i64, offset: i64) -> impl Future<Output = Result<Vec<BlockModel>, CoreError>> + Send;
     /// returns logs matching the filter, newest first (by block number, then log index)
     fn list_logs(&self, filter: &LogFilter, limit: i64, offset: i64) -> impl Future<Output = Result<Vec<LogModel>, CoreError>> + Send;
+    /// returns the logs that have been decoded into events and match the filter, newest first
+    fn list_events(&self, filter: &EventFilter, limit: i64, offset: i64) -> impl Future<Output = Result<Vec<LogModel>, CoreError>> + Send;
     fn get_block_by_parent_hash(&self, p_hash: Vec<u8>) -> impl Future<Output = Result<Option<BlockModel>, CoreError>> + Send;
 
     fn replace_chain_above(&self, ancestor_number: i64, new_chain: &BlockData) -> impl Future<Output = Result<(), CoreError>> + Send;
@@ -38,6 +40,18 @@ pub struct LogFilter {
     pub address: Option<Vec<u8>>,
     /// topics[i] is compared with topic{i}
     pub topics: [Option<Vec<u8>>; 4],
+    pub from_block: Option<i64>,
+    pub to_block: Option<i64>,
+}
+
+/// every field that is set must match; block numbers are inclusive
+#[derive(Debug, Default, Clone)]
+pub struct EventFilter {
+    /// the contract that emitted the event
+    pub address: Option<Vec<u8>>,
+    /// a JSON object the decoded event must contain, e.g. {"event": "Transfer", "args": {"to": "0x…"}};
+    /// Null means no condition
+    pub contains: serde_json::Value,
     pub from_block: Option<i64>,
     pub to_block: Option<i64>,
 }

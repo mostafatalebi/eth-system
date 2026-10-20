@@ -32,7 +32,7 @@ to search and view various indexed entities (such as a block or list of transact
 #### HTTP API
 All routes are under `/api`:
 
-- `/api/indexer/` : indexed blocks (`blocks/list`, `blocks/number/{number}`, `blocks/hash/{hash}`, and `logs`, filterable by `address`, `topic0`..`topic3` and a block range)
+- `/api/indexer/` : indexed blocks (`blocks/list`, `blocks/number/{number}`, `blocks/hash/{hash}`, `logs`, filterable by `address`, `topic0`..`topic3` and a block range, and `events`, the logs decoded into ERC-20/721/1155 events, searchable by `event`, `standard`, `address`, a block range and any decoded argument by name, for example `events?event=Transfer&to=0x…`)
 - `/api/simulator/` : simulated transactions (`list`, `tx?id={hash}`)
 - `/api/auth/` : `signup`, `login`, `refresh` (see Users and authentication)
 

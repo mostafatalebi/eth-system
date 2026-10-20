@@ -50,3 +50,5 @@ CREATE INDEX logs_topic0_block_number_idx ON logs(topic0, block_number);
 CREATE INDEX logs_topic1_idx ON logs(topic1) WHERE topic1 IS NOT NULL;
 CREATE INDEX logs_topic2_idx ON logs(topic2) WHERE topic2 IS NOT NULL;
 CREATE INDEX logs_tx_hash_idx ON logs(tx_hash);
+-- serves the containment search of decoded events: data_json @> '{"event": "Transfer", "args": {"to": "0x…"}}'
+CREATE INDEX logs_data_json_idx ON logs USING gin (data_json jsonb_path_ops);

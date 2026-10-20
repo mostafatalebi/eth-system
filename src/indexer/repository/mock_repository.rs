@@ -2,8 +2,19 @@ use std::sync::{Arc, Mutex};
 use crate::error::CoreError;
 use crate::indexer::models::block::BlockModel;
 use crate::indexer::models::log::LogModel;
-use crate::indexer::repository::repository::{BlockData, BlockRepository, LogFilter};
+use crate::indexer::repository::repository::{BlockData, BlockRepository, EventFilter, LogFilter};
 
+
+/// the containment test of postgres' jsonb @> operator: objects contain the keys of the needle (recursively),
+/// arrays contain every element of the needle, scalars must be equal
+fn json_contains(haystack: &serde_json::Value, needle: &serde_json::Value) -> bool {
+    use serde_json::Value::{Array, Object};
+    match (haystack, needle) {
+        (Object(h), Object(n)) => n.iter().all(|(key, wanted)| h.get(key).is_some_and(|found| json_contains(found, wanted))),
+        (Array(h), Array(n)) => n.iter().all(|wanted| h.iter().any(|found| json_contains(found, wanted))),
+        (h, n) => h == n,
+    }
+}
 
 #[derive(Clone)]
 pub struct MockRepository {
@@ -112,6 +123,18 @@ impl BlockRepository for MockRepository {
             let topics = [&l.topic0, &l.topic1, &l.topic2, &l.topic3];
             filter.address.as_ref().map_or(true, |a| &l.address == a)
                 && filter.topics.iter().zip(topics).all(|(wanted, actual)| wanted.is_none() || wanted == actual)
+                && filter.from_block.map_or(true, |from| l.block_number >= from)
+                && filter.to_block.map_or(true, |to| l.block_number <= to)
+        }).cloned().collect();
+        logs.sort_by(|a, b| (b.block_number, b.log_index).cmp(&(a.block_number, a.log_index)));
+        Ok(logs.into_iter().skip(offset as usize).take(limit as usize).collect())
+    }
+
+    async fn list_events(&self, filter: &EventFilter, limit: i64, offset: i64) -> Result<Vec<LogModel>, CoreError> {
+        let mut logs: Vec<LogModel> = self.inner.lock().unwrap().logs.iter().filter(|l| {
+            l.data_json.get("raw").is_none()
+                && filter.address.as_ref().map_or(true, |a| &l.address == a)
+                && (filter.contains.is_null() || json_contains(&l.data_json, &filter.contains))
                 && filter.from_block.map_or(true, |from| l.block_number >= from)
                 && filter.to_block.map_or(true, |to| l.block_number <= to)
         }).cloned().collect();

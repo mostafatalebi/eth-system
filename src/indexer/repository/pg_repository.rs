@@ -8,7 +8,7 @@ use crate::indexer::models::block::BlockModel;
 use crate::indexer::models::log::LogModel;
 use crate::indexer::models::transaction::TransactionModel;
 use crate::indexer::repository::queries::{BLOCK_IS_FINALIZED_QUERY, BLOCK_MARK_FINALIZED_CHECKPOINT_QUERY, LAST_FINALIZED_CHECKPOINT_QUERY, BLOCK_INSERT_QUERY, LOG_INSERT_QUERY, TX_INSERT_QUERY};
-use crate::indexer::repository::repository::{BlockData, BlockRepository, LogFilter};
+use crate::indexer::repository::repository::{BlockData, BlockRepository, EventFilter, LogFilter};
 
 #[derive(Clone)]
 pub struct PgBlockRepository {
@@ -187,6 +187,37 @@ impl BlockRepository for PgBlockRepository {
         bindings.push(&offset);
         let query = format!("select * from logs {} order by block_number desc, log_index desc limit ${} offset ${}",
             where_clause, bindings.len() - 1, bindings.len());
+
+        let rows = pg.query(&query, bindings.as_slice()).await
+            .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
+        Ok(rows.iter().map(LogModel::new_from_row).collect())
+    }
+
+    async fn list_events(&self, filter: &EventFilter, limit: i64, offset: i64) -> Result<Vec<LogModel>, CoreError> {
+        let pg = self.db.pg().await?;
+        // a log that is still raw has not been decoded into an event
+        let mut conditions: Vec<String> = vec!["not (data_json ? 'raw')".to_string()];
+        let mut bindings: Vec<&(dyn ToSql + Sync)> = Vec::new();
+        if let Some(address) = &filter.address {
+            bindings.push(address);
+            conditions.push(format!("address = ${}", bindings.len()));
+        }
+        if !filter.contains.is_null() {
+            bindings.push(&filter.contains);
+            conditions.push(format!("data_json @> ${}", bindings.len()));
+        }
+        if let Some(from_block) = &filter.from_block {
+            bindings.push(from_block);
+            conditions.push(format!("block_number >= ${}", bindings.len()));
+        }
+        if let Some(to_block) = &filter.to_block {
+            bindings.push(to_block);
+            conditions.push(format!("block_number <= ${}", bindings.len()));
+        }
+        bindings.push(&limit);
+        bindings.push(&offset);
+        let query = format!("select * from logs where {} order by block_number desc, log_index desc limit ${} offset ${}",
+            conditions.join(" and "), bindings.len() - 1, bindings.len());
 
         let rows = pg.query(&query, bindings.as_slice()).await
             .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
@@ -686,6 +717,52 @@ mod tests {
         assert_eq!(positions(&repo.list_logs(&by_range, 100, 0).await.unwrap()), vec![(2, 0)]);
         let up_to_one = LogFilter { to_block: Some(1), ..Default::default() };
         assert_eq!(repo.list_logs(&up_to_one, 100, 0).await.unwrap().len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_list_events_searches_the_decoded_json() {
+        let (repo, db, _lock) = setup().await;
+        let transfer = |from: u8, to: u8, value: &str| serde_json::json!({
+            "standard": "erc20", "event": "Transfer", "signature": "Transfer(address,address,uint256)",
+            "args": { "from": format!("0x{}", format!("{:02x}", from).repeat(20)), "to": format!("0x{}", format!("{:02x}", to).repeat(20)), "value": value }
+        });
+        // block 1: a transfer 1 -> 2, an approval, a log that is not decoded; block 2: a transfer 2 -> 3 on another contract
+        let (mut b1, h1) = parts(1, B256::random(), &[3]);
+        b1.2[0].data_json = transfer(1, 2, "100");
+        b1.2[1].data_json = serde_json::json!({ "standard": "erc20", "event": "Approval", "args": { "owner": format!("0x{}", "11".repeat(20)), "value": "5" } });
+        let (mut b2, _) = parts(2, h1, &[1]);
+        b2.2[0].data_json = transfer(2, 3, "200");
+        b2.2[0].address = vec![0xbb; 20];
+        upsert_parts(&repo, &[b1, b2]).await.unwrap();
+
+        let positions = |logs: &Vec<LogModel>| logs.iter().map(|l| (l.block_number, l.log_index)).collect::<Vec<_>>();
+        let contains = |value: serde_json::Value| EventFilter { contains: value, ..Default::default() };
+
+        // the log that is not decoded is not an event
+        let all = repo.list_events(&EventFilter::default(), 100, 0).await.unwrap();
+        assert_eq!(positions(&all), vec![(2, 0), (1, 1), (1, 0)]);
+        // the decoded JSON survives the database
+        assert_eq!(all[0].data_json["args"]["value"], "200");
+
+        let by_event = contains(serde_json::json!({ "event": "Transfer" }));
+        assert_eq!(positions(&repo.list_events(&by_event, 100, 0).await.unwrap()), vec![(2, 0), (1, 0)]);
+        let by_argument = contains(serde_json::json!({ "event": "Transfer", "args": { "to": format!("0x{}", "02".repeat(20)) } }));
+        assert_eq!(positions(&repo.list_events(&by_argument, 100, 0).await.unwrap()), vec![(1, 0)]);
+        let no_match = contains(serde_json::json!({ "args": { "value": "999" } }));
+        assert!(repo.list_events(&no_match, 100, 0).await.unwrap().is_empty());
+        let by_contract = EventFilter { address: Some(vec![0xbb; 20]), ..Default::default() };
+        assert_eq!(positions(&repo.list_events(&by_contract, 100, 0).await.unwrap()), vec![(2, 0)]);
+        let by_range = EventFilter { to_block: Some(1), ..Default::default() };
+        assert_eq!(positions(&repo.list_events(&by_range, 100, 0).await.unwrap()), vec![(1, 1), (1, 0)]);
+        assert_eq!(positions(&repo.list_events(&EventFilter::default(), 1, 1).await.unwrap()), vec![(1, 1)]);
+
+        // the search can use the GIN index on data_json (sequential scans are switched off so the tiny table cannot hide it)
+        let client = db.pg().await.unwrap();
+        client.batch_execute("begin; set local enable_seqscan = off").await.unwrap();
+        let plan = client.query("explain select * from logs where data_json @> '{\"event\": \"Transfer\"}'::jsonb", &[]).await.unwrap();
+        client.batch_execute("rollback").await.unwrap();
+        let plan: String = plan.iter().map(|r| r.get::<_, String>(0)).collect::<Vec<_>>().join("\n");
+        assert!(plan.contains("logs_data_json_idx"), "the index is not used:\n{}", plan);
     }
 }
 

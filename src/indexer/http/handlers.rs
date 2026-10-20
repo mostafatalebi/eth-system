@@ -13,7 +13,7 @@ use crate::indexer::repository::repository::BlockRepository;
 use crate::http_server::response::{ApiResponse, ErrorResponse};
 use crate::indexer::models::block::BlockModel;
 use crate::indexer::models::log::LogModel;
-use crate::indexer::repository::repository::LogFilter;
+use crate::indexer::repository::repository::{EventFilter, LogFilter};
 
 #[derive(Deserialize, Validate)]
 pub struct ListParams {
@@ -95,6 +95,105 @@ impl LogListParams {
     }
 }
 
+/// query parameters of /events that are not decoded arguments
+const EVENT_RESERVED_PARAMS: [&str; 7] = ["event", "standard", "address", "from_block", "to_block", "limit", "offset"];
+
+/// an address (with or without 0x) or a 32-byte hash is compared in lowercase, as the decoded events store them
+fn normalize_arg_value(value: &str) -> String {
+    let digits = value.strip_prefix("0x").unwrap_or(value);
+    let is_hex = !digits.is_empty() && digits.chars().all(|c| c.is_ascii_hexdigit());
+    if is_hex && (digits.len() == 40 || digits.len() == 64) {
+        format!("0x{}", digits.to_lowercase())
+    } else {
+        value.to_string()
+    }
+}
+
+/// turns the query of /events into a filter, a limit and an offset; every invalid parameter is reported
+fn event_filter_from_query(query: &std::collections::HashMap<String, String>) -> Result<(EventFilter, i64, i64), ErrorResponse> {
+    let mut error = ErrorResponse::new("validation error".to_string());
+    let mut invalid = false;
+    let mut reject = |field: &str, msg: &str| {
+        error.add_field_error(field.to_string(), msg.to_string());
+        invalid = true;
+    };
+    let number = |field: &str| query.get(field).map(|v| v.parse::<i64>().map_err(|_| field.to_string()));
+    let mut parsed = |field: &str, reject: &mut dyn FnMut(&str, &str)| -> Option<i64> {
+        match number(field) {
+            Some(Ok(n)) => Some(n),
+            Some(Err(_)) => { reject(field, &format!("{} must be an integer", field)); None }
+            None => None,
+        }
+    };
+
+    let mut filter = EventFilter::default();
+    match query.get("address").map(|a| a.parse::<Address>()) {
+        Some(Ok(address)) => filter.address = Some(address.to_vec()),
+        Some(Err(_)) => reject("address", "address must be a 20-byte hex string (40 hex characters, optionally 0x-prefixed)"),
+        None => {}
+    }
+
+    // the event, the standard and the arguments are matched together by one containment test on data_json
+    let mut contains = serde_json::Map::new();
+    for key in ["event", "standard"] {
+        if let Some(value) = query.get(key) {
+            if value.is_empty() || !value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/') {
+                reject(key, &format!("{} must consist of letters, digits, '_' and '/'", key));
+            } else {
+                contains.insert(key.to_string(), serde_json::Value::String(value.clone()));
+            }
+        }
+    }
+    let mut args = serde_json::Map::new();
+    for (name, value) in query.iter().filter(|(name, _)| !EVENT_RESERVED_PARAMS.contains(&name.as_str())) {
+        if !name.starts_with(|c: char| c.is_ascii_alphabetic()) || name.len() > 32 || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            reject(name, "an argument name must start with a letter and consist of letters, digits and '_' (at most 32)");
+            continue;
+        }
+        if value.is_empty() || value.len() > 100 {
+            reject(name, "an argument value must be between 1 and 100 characters");
+            continue;
+        }
+        let value = normalize_arg_value(value);
+        let json_value = match (name.as_str(), value.as_str()) {
+            // booleans are stored as JSON booleans, numbers as strings
+            (_, "true") => serde_json::Value::Bool(true),
+            (_, "false") => serde_json::Value::Bool(false),
+            // the arrays of a batch transfer contain the value
+            ("ids" | "values", v) => serde_json::json!([v]),
+            (_, v) => serde_json::Value::String(v.to_string()),
+        };
+        args.insert(name.clone(), json_value);
+    }
+    if !args.is_empty() {
+        contains.insert("args".to_string(), serde_json::Value::Object(args));
+    }
+    if !contains.is_empty() {
+        filter.contains = serde_json::Value::Object(contains);
+    }
+
+    filter.from_block = parsed("from_block", &mut reject);
+    filter.to_block = parsed("to_block", &mut reject);
+    for (field, block) in [("from_block", filter.from_block), ("to_block", filter.to_block)] {
+        if block.is_some_and(|b| b < 0) {
+            reject(field, &format!("{} must not be negative", field));
+        }
+    }
+    if filter.from_block.zip(filter.to_block).is_some_and(|(from, to)| from > to) {
+        reject("from_block", "from_block must not be greater than to_block");
+    }
+    let limit = parsed("limit", &mut reject).unwrap_or(default_logs_limit());
+    if !(1..=MAX_LOGS_LIMIT).contains(&limit) {
+        reject("limit", &format!("limit must be between 1 and {}", MAX_LOGS_LIMIT));
+    }
+    let offset = parsed("offset", &mut reject).unwrap_or(0);
+    if offset < 0 {
+        reject("offset", "offset must not be negative");
+    }
+
+    if invalid { Err(error) } else { Ok((filter, limit, offset)) }
+}
+
 pub struct IndexerHandlers;
 
 impl IndexerHandlers {
@@ -103,6 +202,7 @@ impl IndexerHandlers {
             .route("/blocks/list", get(Self::get_list::<S, R>))
             .route("/blocks/hash/{hash}", get(Self::get_block_by_hash::<S, R>))
             .route("/logs", get(Self::get_logs::<S, R>))
+            .route("/events", get(Self::get_events::<S, R>))
             .route("/blocks/number/{number}", get(Self::get_block_by_number::<S, R>))
             // .route("/transactions/list", get(Self::get_list::<S, R>))
             // .route("/transactions/{{hash}}", get(Self::get_list::<S, R>))
@@ -177,6 +277,29 @@ impl IndexerHandlers {
         match repo.list_logs(&filter, params.limit, params.offset).await {
             Err(e) => ApiResponse::for_error(e.to_string()),
             Ok(logs) => ApiResponse::for_success(Some(logs)),
+        }
+    }
+
+    /// GET /indexer/events?event=&standard=&address=&from_block=&to_block=&limit=&offset=&<argument>=...;
+    /// the decoded events, newest first. Any other parameter is a decoded argument to match, by name:
+    /// /events?event=Transfer&to=0x…&value=1500
+    pub async fn get_events<S: AppStorage, R: BlockRepository+Clone>(State(app) : State<Arc<App<S, R>>>, Query(query): Query<std::collections::HashMap<String, String>>)
+        -> ApiResponse<Vec<LogModel>> {
+        let (filter, limit, offset) = match event_filter_from_query(&query) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                let mut api_response = ApiResponse::default();
+                api_response.set_status_code(StatusCode::BAD_REQUEST);
+                api_response.set_error(error);
+                return api_response;
+            }
+        };
+        let Some(repo) = app.block_repository.as_ref() else {
+            return ApiResponse::for_error("block repository is not set".to_string());
+        };
+        match repo.list_events(&filter, limit, offset).await {
+            Err(e) => ApiResponse::for_error(e.to_string()),
+            Ok(events) => ApiResponse::for_success(Some(events)),
         }
     }
 
@@ -454,6 +577,128 @@ mod tests {
     async fn test_logs_without_a_repository_is_an_internal_error() {
         let app: App<InMemoryStorage, MockRepository> = App::new_for_test(InMemoryStorage::new(), None);
         let (status, _) = get(IndexerHandlers::get_routes(Arc::new(app)), "/indexer/logs").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // events
+
+    fn a() -> String { format!("0x{}", "11".repeat(20)) }
+    fn b() -> String { format!("0x{}", "22".repeat(20)) }
+    fn c() -> String { format!("0x{}", "33".repeat(20)) }
+
+    fn event_log(block_number: i64, log_index: i32, contract: u8, data_json: Value) -> LogModel {
+        LogModel {
+            block_hash: vec![block_number as u8; 32], block_number, tx_hash: vec![1; 32], tx_index: 0, log_index,
+            address: vec![contract; 20], topic0: None, topic1: None, topic2: None, topic3: None, data_json,
+        }
+    }
+
+    fn event_json(standard: &str, event: &str, args: Value) -> Value {
+        serde_json::json!({ "standard": standard, "event": event, "signature": format!("{}(...)", event), "args": args })
+    }
+
+    /// a router over seven logs; the (block, log index) of each is in the comment
+    fn events_setup() -> Router {
+        let repo = MockRepository::new();
+        repo.add_logs(vec![
+            // (1, 0) 100 from A to B on 0xaa
+            event_log(1, 0, 0xaa, event_json("erc20", "Transfer", serde_json::json!({ "from": a(), "to": b(), "value": "100" }))),
+            // (1, 1) 200 from B to C on 0xaa
+            event_log(1, 1, 0xaa, event_json("erc20", "Transfer", serde_json::json!({ "from": b(), "to": c(), "value": "200" }))),
+            // (2, 0) an NFT from A to C on 0xbb
+            event_log(2, 0, 0xbb, event_json("erc721", "Transfer", serde_json::json!({ "from": a(), "to": c(), "tokenId": "7" }))),
+            // (2, 1) an allowance of A to B on 0xaa
+            event_log(2, 1, 0xaa, event_json("erc20", "Approval", serde_json::json!({ "owner": a(), "spender": b(), "value": "5" }))),
+            // (3, 0) a batch from A to B on 0xcc
+            event_log(3, 0, 0xcc, event_json("erc1155", "TransferBatch", serde_json::json!({ "operator": a(), "from": a(), "to": b(), "ids": ["1", "2"], "values": ["10", "20"] }))),
+            // (3, 1) A approves B for all on 0xaa
+            event_log(3, 1, 0xaa, event_json("erc721/erc1155", "ApprovalForAll", serde_json::json!({ "owner": a(), "operator": b(), "approved": true }))),
+            // (3, 2) not decoded
+            event_log(3, 2, 0xaa, serde_json::json!({ "raw": "0x00" })),
+        ]);
+        let app = App::new_for_test(InMemoryStorage::new(), Some(repo));
+        IndexerHandlers::get_routes(Arc::new(app))
+    }
+
+    async fn events(query: &str) -> Vec<(i64, i64)> {
+        let (status, body) = get(events_setup(), &format!("/indexer/events?{}", query)).await;
+        assert_eq!(status, StatusCode::OK, "{}", query);
+        log_positions(&body)
+    }
+
+    #[tokio::test]
+    async fn test_events_are_the_decoded_logs_newest_first() {
+        assert_eq!(events("").await, vec![(3, 1), (3, 0), (2, 1), (2, 0), (1, 1), (1, 0)]);
+    }
+
+    #[tokio::test]
+    async fn test_events_can_be_filtered_by_name_and_standard() {
+        assert_eq!(events("event=Transfer").await, vec![(2, 0), (1, 1), (1, 0)]);
+        assert_eq!(events("standard=erc20").await, vec![(2, 1), (1, 1), (1, 0)]);
+        assert_eq!(events("standard=erc20&event=Approval").await, vec![(2, 1)]);
+        assert_eq!(events("standard=erc721%2Ferc1155").await, vec![(3, 1)]);
+        assert_eq!(events("event=Swap").await, Vec::<(i64, i64)>::new());
+    }
+
+    #[tokio::test]
+    async fn test_events_can_be_searched_by_decoded_argument() {
+        let to_b = format!("event=Transfer&to={}", b());
+        assert_eq!(events(&to_b).await, vec![(1, 0)]);
+        // addresses are compared in lowercase, with or without the 0x prefix
+        assert_eq!(events(&format!("event=Transfer&to={}", b().to_uppercase().replace("0X", "0x"))).await, vec![(1, 0)]);
+        assert_eq!(events(&format!("event=Transfer&to={}", &b()[2..])).await, vec![(1, 0)]);
+        // several arguments must all match
+        assert_eq!(events(&format!("event=Transfer&from={}&value=100", a())).await, vec![(1, 0)]);
+        assert_eq!(events(&format!("event=Transfer&from={}&value=999", a())).await, Vec::<(i64, i64)>::new());
+        // an argument searched without the event name matches whichever event has it
+        assert_eq!(events(&format!("owner={}", a())).await, vec![(3, 1), (2, 1)]);
+        assert_eq!(events("tokenId=7").await, vec![(2, 0)]);
+    }
+
+    #[tokio::test]
+    async fn test_events_can_be_searched_by_boolean_and_array_arguments() {
+        assert_eq!(events("approved=true").await, vec![(3, 1)]);
+        assert_eq!(events("approved=false").await, Vec::<(i64, i64)>::new());
+        // the arrays of a batch transfer match when they contain the value
+        assert_eq!(events("ids=2").await, vec![(3, 0)]);
+        assert_eq!(events("ids=3").await, Vec::<(i64, i64)>::new());
+        assert_eq!(events("values=20&ids=1").await, vec![(3, 0)]);
+    }
+
+    #[tokio::test]
+    async fn test_events_can_be_filtered_by_contract_and_block_range() {
+        assert_eq!(events(&format!("address=0x{}", "bb".repeat(20))).await, vec![(2, 0)]);
+        assert_eq!(events(&format!("address=0x{}&event=Transfer", "aa".repeat(20))).await, vec![(1, 1), (1, 0)]);
+        assert_eq!(events("from_block=2&to_block=2").await, vec![(2, 1), (2, 0)]);
+        assert_eq!(events("to_block=1").await, vec![(1, 1), (1, 0)]);
+    }
+
+    #[tokio::test]
+    async fn test_events_honour_limit_and_offset() {
+        assert_eq!(events("limit=2&offset=1").await, vec![(3, 0), (2, 1)]);
+    }
+
+    #[tokio::test]
+    async fn test_events_report_every_invalid_parameter_at_once() {
+        let (status, body) = get(events_setup(), "/indexer/events?address=zzz&limit=0&offset=-1&from_block=abc&bad-name=1&to=&event=%24").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        for field in ["address", "limit", "offset", "from_block", "bad-name", "to", "event"] {
+            assert!(body["error"]["fields"][field].is_string(), "{} must be reported", field);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_events_reject_a_reversed_block_range_and_a_too_large_limit() {
+        for query in ["from_block=5&to_block=2", "limit=1001", "to_block=-1"] {
+            let (status, _) = get(events_setup(), &format!("/indexer/events?{}", query)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{}", query);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_events_without_a_repository_is_an_internal_error() {
+        let app: App<InMemoryStorage, MockRepository> = App::new_for_test(InMemoryStorage::new(), None);
+        let (status, _) = get(IndexerHandlers::get_routes(Arc::new(app)), "/indexer/events").await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

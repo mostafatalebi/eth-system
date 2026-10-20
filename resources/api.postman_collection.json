@@ -309,6 +309,81 @@
           }
         },
         {
+          "name": "List events",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 and decoded Transfer events, newest first', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d).to.be.an('array');",
+                  "    d.forEach((e) => {",
+                  "        pm.expect(e.data_json.event).to.eql('Transfer');",
+                  "        pm.expect(e.data_json.args).to.have.property('from');",
+                  "    });",
+                  "    for (let i = 1; i < d.length; i++) {",
+                  "        pm.expect(d[i - 1].block_number).to.be.at.least(d[i].block_number);",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/indexer/events?event=Transfer&limit=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "indexer",
+                "events"
+              ],
+              "query": [
+                {
+                  "key": "event",
+                  "value": "Transfer"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "standard",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "address",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "from",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "to",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "value",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
           "name": "Get block by number",
           "request": {
             "method": "GET",
