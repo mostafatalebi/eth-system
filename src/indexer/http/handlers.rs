@@ -112,3 +112,144 @@ impl IndexerHandlers {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::B256;
+    use axum::body::Body;
+    use axum::http::Request;
+    use serde_json::Value;
+    use tower::ServiceExt;
+    use crate::db::storage::InMemoryStorage;
+    use crate::indexer::repository::mock_repository::MockRepository;
+    use crate::indexer::types::mocks::mock_block_with_parent;
+
+    /// a router over a mock repository holding blocks numbered 1..=count, plus the hashes of those blocks
+    fn setup(count: u64) -> (Router, Vec<B256>) {
+        let repo = MockRepository::new();
+        let blocks: Vec<_> = (1..=count).map(|n| mock_block_with_parent(n, B256::random())).collect();
+        let hashes = blocks.iter().map(|b| b.header.hash).collect();
+        repo.add_blocks(blocks.iter().map(|b| BlockModel::new_from_rpc_block(b).unwrap()).collect());
+        let app = App::new_for_test(InMemoryStorage::new(), Some(repo));
+        (IndexerHandlers::get_routes(Arc::new(app)), hashes)
+    }
+
+    async fn get(router: Router, path: &str) -> (StatusCode, Value) {
+        let response = router.oneshot(Request::builder().uri(path).body(Body::empty()).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    fn numbers(body: &Value) -> Vec<i64> {
+        body["data"].as_array().unwrap().iter().map(|b| b["number"].as_i64().unwrap()).collect()
+    }
+
+    #[tokio::test]
+    async fn test_list_returns_newest_blocks_first() {
+        let (router, _) = setup(3);
+        let (status, body) = get(router, "/indexer/blocks/list").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(numbers(&body), vec![3, 2, 1]);
+    }
+
+    #[tokio::test]
+    async fn test_list_honours_limit_and_offset() {
+        let (router, _) = setup(5);
+        let (status, body) = get(router, "/indexer/blocks/list?limit=2&offset=1").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(numbers(&body), vec![4, 3]);
+    }
+
+    #[tokio::test]
+    async fn test_list_of_an_empty_repository_is_an_empty_array() {
+        let (router, _) = setup(0);
+        let (status, body) = get(router, "/indexer/blocks/list").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["data"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn test_list_rejects_out_of_range_limit_and_offset() {
+        for (query, field) in [("limit=0", "limit"), ("limit=101", "limit"), ("offset=-1", "offset")] {
+            let (router, _) = setup(1);
+            let (status, body) = get(router, &format!("/indexer/blocks/list?{}", query)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{}", query);
+            assert_eq!(body["ok"], false);
+            assert!(body["error"]["fields"][field].is_string(), "{} must be reported as a field error", field);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_rejects_a_non_numeric_limit() {
+        let (router, _) = setup(1);
+        let (status, _) = get(router, "/indexer/blocks/list?limit=abc").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_get_block_by_number() {
+        let (router, _) = setup(3);
+        let (status, body) = get(router, "/indexer/blocks/number/2").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["number"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_unknown_block_by_number_is_not_found() {
+        let (router, _) = setup(3);
+        let (status, body) = get(router, "/indexer/blocks/number/99").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["ok"], false);
+    }
+
+    #[tokio::test]
+    async fn test_get_block_by_invalid_number_is_a_validation_error() {
+        for number in ["abc", "-1"] {
+            let (router, _) = setup(1);
+            let (status, body) = get(router, &format!("/indexer/blocks/number/{}", number)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{}", number);
+            assert!(body["error"]["fields"]["number"].is_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_block_by_hash_with_and_without_prefix() {
+        let (router, hashes) = setup(3);
+        let hash = hashes[1];
+        for identifier in [format!("{:?}", hash), alloy::hex::encode(hash)] {
+            let (status, body) = get(router.clone(), &format!("/indexer/blocks/hash/{}", identifier)).await;
+            assert_eq!(status, StatusCode::OK, "{}", identifier);
+            assert_eq!(body["data"]["number"], 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_unknown_block_by_hash_is_not_found() {
+        let (router, _) = setup(3);
+        let (status, _) = get(router, &format!("/indexer/blocks/hash/{:?}", B256::random())).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_block_by_invalid_hash_is_a_validation_error() {
+        for hash in ["zzzz", "0x1234", &"z".repeat(64)] {
+            let (router, _) = setup(1);
+            let (status, body) = get(router, &format!("/indexer/blocks/hash/{}", hash)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{}", hash);
+            assert!(body["error"]["fields"]["hash"].is_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_missing_block_repository_is_an_internal_error() {
+        let app: App<InMemoryStorage, MockRepository> = App::new_for_test(InMemoryStorage::new(), None);
+        let router = IndexerHandlers::get_routes(Arc::new(app));
+        let (status, _) = get(router.clone(), "/indexer/blocks/list").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        let (status, _) = get(router, "/indexer/blocks/number/1").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+}

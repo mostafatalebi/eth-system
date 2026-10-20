@@ -57,6 +57,17 @@ impl<S: AppStorage, R: BlockRepository+Clone> App<S, R> {
         self.block_repository = Some(block_repository);
     }
 
+    #[cfg(test)]
+    pub fn new_for_test(app_storage: S, block_repository: Option<R>) -> Self {
+        Self {
+            config: Arc::new(Config::default()),
+            persistence: None,
+            block_repository,
+            storage: Arc::new(app_storage),
+            provider: None,
+        }
+    }
+
     pub fn new_from_args(args: &CmdArgs, app_storage: S) -> Result<Self, CoreError> {
         let c = Config::load_from_file(args.config.to_string());
 

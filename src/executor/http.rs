@@ -72,3 +72,65 @@ impl SimulatorHandlers {
         return ApiResponse::for_success(res);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use serde_json::Value;
+    use tower::ServiceExt;
+    use crate::db::storage::InMemoryStorage;
+    use crate::indexer::repository::mock_repository::MockRepository;
+
+    fn router() -> Router {
+        let app: App<InMemoryStorage, MockRepository> = App::new_for_test(InMemoryStorage::new(), None);
+        SimulatorHandlers::get_routes(Arc::new(app))
+    }
+
+    async fn get(path: &str) -> (StatusCode, Value) {
+        let response = router().oneshot(Request::builder().uri(path).body(Body::empty()).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test]
+    async fn test_unknown_transaction_is_not_found() {
+        let hash = B256::random();
+        for id in [format!("{:?}", hash), alloy::hex::encode(hash)] {
+            let (status, body) = get(&format!("/simulator/tx?id={}", id)).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{}", id);
+            assert_eq!(body["ok"], false);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_transaction_id_of_the_right_length_but_not_hex_is_a_validation_error() {
+        let (status, body) = get(&format!("/simulator/tx?id={}", "z".repeat(64))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"]["fields"]["id"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_transaction_id_of_the_wrong_length_is_a_validation_error() {
+        for id in ["0x1234", &"a".repeat(67)] {
+            let (status, body) = get(&format!("/simulator/tx?id={}", id)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{}", id);
+            assert!(body["error"]["fields"]["id"].is_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_transaction_without_an_id_is_rejected() {
+        let (status, _) = get("/simulator/tx").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_list_of_an_empty_storage_is_ok() {
+        let (status, body) = get("/simulator/list").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], true);
+    }
+}
