@@ -83,7 +83,8 @@ impl LogModel {
             topic1: topic(1),
             topic2: topic(2),
             topic3: topic(3),
-            data_json: serde_json::json!({ "raw": format!("0x{}", alloy::hex::encode(&log.data().data)) }),
+            data_json: crate::indexer::decoder::decode_event(topics, &log.data().data)
+                .unwrap_or_else(|| serde_json::json!({ "raw": format!("0x{}", alloy::hex::encode(&log.data().data)) })),
         })
     }
 
@@ -99,7 +100,7 @@ impl LogModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::B256;
+    use alloy::primitives::{Address, B256, U256};
     use crate::indexer::types::mocks::mock_block_with_receipts;
 
     fn logs_of_a_block() -> Vec<LogModel> {
@@ -126,6 +127,28 @@ mod tests {
         assert_eq!(log.address, vec![0xaa; 20]);
         assert_eq!(log.data_json, serde_json::json!({ "raw": "0x00ff" }));
         assert_eq!(log.topic0.as_ref().unwrap().len(), 32);
+    }
+
+    // a log of a known event is stored decoded, with its indexed arguments as well; any other log keeps its raw data
+    #[test]
+    fn test_a_known_event_is_stored_decoded_and_an_unknown_one_raw() {
+        let transfer = |topic0: B256| -> Log {
+            let (_, receipts) = mock_block_with_receipts(9, B256::random(), &[1]);
+            let mut log = receipts[0].inner.logs()[0].clone();
+            let topics = vec![topic0, Address::repeat_byte(0x11).into_word(), Address::repeat_byte(0x22).into_word()];
+            log.inner.data = alloy::primitives::LogData::new_unchecked(topics, U256::from(1500u64).to_be_bytes::<32>().to_vec().into());
+            log
+        };
+
+        let decoded = LogModel::new_from_rpc_log(&transfer(alloy::primitives::keccak256("Transfer(address,address,uint256)"))).unwrap();
+        assert_eq!(decoded.data_json["event"], "Transfer");
+        assert_eq!(decoded.data_json["args"]["from"], format!("0x{}", "11".repeat(20)));
+        assert_eq!(decoded.data_json["args"]["value"], "1500");
+        // the indexed arguments are still in the topic columns, which is what lookups filter on
+        assert_eq!(decoded.topic1.as_ref().unwrap()[12..], vec![0x11; 20][..]);
+
+        let raw = LogModel::new_from_rpc_log(&transfer(B256::repeat_byte(0x99))).unwrap();
+        assert_eq!(raw.data_json, serde_json::json!({ "raw": format!("0x{}", "00".repeat(30) + "05dc") }));
     }
 
     #[test]

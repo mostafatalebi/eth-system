@@ -6,4 +6,5 @@ pub mod repository;
 pub mod validator;
 
 pub mod clients;
+pub mod decoder;
 pub mod http;
