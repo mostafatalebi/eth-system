@@ -1,25 +1,63 @@
 use alloy::rpc::types::Log;
+use serde::{Serialize, Serializer};
+use tokio_postgres::Row;
 use tokio_postgres::types::ToSql;
 use crate::error::CoreError;
 
-/// an event log emitted while executing a transaction; one row of the logs table
-#[derive(Debug, Clone, PartialEq)]
+fn serialize_hex<S: Serializer>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&format!("0x{}", alloy::hex::encode(bytes)))
+}
+
+fn serialize_optional_hex<S: Serializer>(bytes: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error> {
+    match bytes {
+        Some(bytes) => serialize_hex(bytes, serializer),
+        None => serializer.serialize_none(),
+    }
+}
+
+/// an event log emitted while executing a transaction; one row of the logs table.
+/// Serialized (for the API) with its binary fields as 0x-prefixed hex strings
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LogModel {
+    #[serde(serialize_with = "serialize_hex")]
     pub block_hash: Vec<u8>,
     pub block_number: i64,
+    #[serde(serialize_with = "serialize_hex")]
     pub tx_hash: Vec<u8>,
     pub tx_index: i32,
     /// position within the whole block, not within the transaction
     pub log_index: i32,
+    #[serde(serialize_with = "serialize_hex")]
     pub address: Vec<u8>,
+    #[serde(serialize_with = "serialize_optional_hex")]
     pub topic0: Option<Vec<u8>>,
+    #[serde(serialize_with = "serialize_optional_hex")]
     pub topic1: Option<Vec<u8>>,
+    #[serde(serialize_with = "serialize_optional_hex")]
     pub topic2: Option<Vec<u8>>,
+    #[serde(serialize_with = "serialize_optional_hex")]
     pub topic3: Option<Vec<u8>>,
+    #[serde(serialize_with = "serialize_hex")]
     pub data: Vec<u8>,
 }
 
 impl LogModel {
+    pub fn new_from_row(row: &Row) -> LogModel {
+        Self {
+            block_hash: row.get("block_hash"),
+            block_number: row.get("block_number"),
+            tx_hash: row.get("tx_hash"),
+            tx_index: row.get("tx_index"),
+            log_index: row.get("log_index"),
+            address: row.get("address"),
+            topic0: row.get("topic0"),
+            topic1: row.get("topic1"),
+            topic2: row.get("topic2"),
+            topic3: row.get("topic3"),
+            data: row.get("data"),
+        }
+    }
+
     pub fn new_from_rpc_log(log: &Log) -> Result<LogModel, CoreError> {
         let missing = |field: &str| CoreError::ReceiptsInvalid(format!("log has no {field} (pending?)"));
         let block_hash = log.block_hash.ok_or(missing("block_hash"))?;

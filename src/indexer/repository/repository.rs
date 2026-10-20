@@ -18,6 +18,8 @@ pub trait BlockRepository: Send + Sync + 'static {
     fn get_block(&self, hash: Option<Vec<u8>>, number: Option<i64>) -> impl Future<Output = Result<Option<BlockModel>, CoreError>> + Send;
     /// returns blocks ordered by number, newest first
     fn list_blocks(&self, limit: i64, offset: i64) -> impl Future<Output = Result<Vec<BlockModel>, CoreError>> + Send;
+    /// returns logs matching the filter, newest first (by block number, then log index)
+    fn list_logs(&self, filter: &LogFilter, limit: i64, offset: i64) -> impl Future<Output = Result<Vec<LogModel>, CoreError>> + Send;
     fn get_block_by_parent_hash(&self, p_hash: Vec<u8>) -> impl Future<Output = Result<Option<BlockModel>, CoreError>> + Send;
 
     fn replace_chain_above(&self, ancestor_number: i64, new_chain: &BlockData) -> impl Future<Output = Result<(), CoreError>> + Send;
@@ -29,6 +31,16 @@ pub trait BlockRepository: Send + Sync + 'static {
     fn last_finalized_checkpoint(&self) -> impl Future<Output = Result<Option<i64>, CoreError>> + Send;
 }
 
+
+/// every field that is set must match; block numbers are inclusive
+#[derive(Debug, Default, Clone)]
+pub struct LogFilter {
+    pub address: Option<Vec<u8>>,
+    /// topics[i] is compared with topic{i}
+    pub topics: [Option<Vec<u8>>; 4],
+    pub from_block: Option<i64>,
+    pub to_block: Option<i64>,
+}
 
 pub struct BlockData<'a> {
     pub blocks: &'a Vec<BlockModel>,

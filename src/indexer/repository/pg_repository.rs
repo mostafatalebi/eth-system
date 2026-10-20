@@ -8,7 +8,7 @@ use crate::indexer::models::block::BlockModel;
 use crate::indexer::models::log::LogModel;
 use crate::indexer::models::transaction::TransactionModel;
 use crate::indexer::repository::queries::{BLOCK_IS_FINALIZED_QUERY, BLOCK_MARK_FINALIZED_CHECKPOINT_QUERY, LAST_FINALIZED_CHECKPOINT_QUERY, BLOCK_INSERT_QUERY, LOG_INSERT_QUERY, TX_INSERT_QUERY};
-use crate::indexer::repository::repository::{BlockData, BlockRepository};
+use crate::indexer::repository::repository::{BlockData, BlockRepository, LogFilter};
 
 #[derive(Clone)]
 pub struct PgBlockRepository {
@@ -157,6 +157,40 @@ impl BlockRepository for PgBlockRepository {
         let rows = pg.query("select * from blocks order by number desc limit $1 offset $2", &[&limit, &offset]).await
             .map_err(|e| CoreError::DbQueryFailed(e.to_string()))?;
         Ok(rows.iter().map(BlockModel::new_from_db_row).collect())
+    }
+
+    async fn list_logs(&self, filter: &LogFilter, limit: i64, offset: i64) -> Result<Vec<LogModel>, CoreError> {
+        let pg = self.db.pg().await?;
+        let mut conditions: Vec<String> = Vec::new();
+        let mut bindings: Vec<&(dyn ToSql + Sync)> = Vec::new();
+        // a condition's placeholder is numbered after the values bound so far
+        if let Some(address) = &filter.address {
+            bindings.push(address);
+            conditions.push(format!("address = ${}", bindings.len()));
+        }
+        for (i, topic) in filter.topics.iter().enumerate() {
+            if let Some(topic) = topic {
+                bindings.push(topic);
+                conditions.push(format!("topic{} = ${}", i, bindings.len()));
+            }
+        }
+        if let Some(from_block) = &filter.from_block {
+            bindings.push(from_block);
+            conditions.push(format!("block_number >= ${}", bindings.len()));
+        }
+        if let Some(to_block) = &filter.to_block {
+            bindings.push(to_block);
+            conditions.push(format!("block_number <= ${}", bindings.len()));
+        }
+        let where_clause = if conditions.is_empty() { String::new() } else { format!("where {}", conditions.join(" and ")) };
+        bindings.push(&limit);
+        bindings.push(&offset);
+        let query = format!("select * from logs {} order by block_number desc, log_index desc limit ${} offset ${}",
+            where_clause, bindings.len() - 1, bindings.len());
+
+        let rows = pg.query(&query, bindings.as_slice()).await
+            .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
+        Ok(rows.iter().map(LogModel::new_from_row).collect())
     }
 
     async fn replace_chain_above(&self, ancestor_number: i64, new_chain: &BlockData<'_>) -> Result<(), CoreError> {
@@ -613,6 +647,45 @@ mod tests {
         let (block, _) = parts(1, B256::random(), &[1]);
         let res = repo.upsert_blocks(&BlockData::new(&vec![block.0], &vec![block.1], &vec![])).await;
         assert!(matches!(res, Err(CoreError::BadArgument(_))));
+    }
+
+    #[tokio::test]
+    async fn test_list_logs_filters_orders_and_pages() {
+        let (repo, _db, _lock) = setup().await;
+        let (b1, h1) = parts(1, B256::random(), &[2, 3]);
+        let (b2, _) = parts(2, h1, &[1]);
+        upsert_parts(&repo, &[b1.clone(), b2.clone()]).await.unwrap();
+        let positions = |logs: &Vec<LogModel>| logs.iter().map(|l| (l.block_number, l.log_index)).collect::<Vec<_>>();
+        let no_filter = LogFilter::default();
+
+        // newest first, by block and then by log index
+        let all = repo.list_logs(&no_filter, 100, 0).await.unwrap();
+        assert_eq!(positions(&all), vec![(2, 0), (1, 4), (1, 3), (1, 2), (1, 1), (1, 0)]);
+        // topics round-trip, with unused slots NULL
+        assert!(all[0].topic0.is_none());
+        assert_eq!(all[1].topic3.as_ref().map(|t| t.len()), Some(32));
+
+        // paging
+        assert_eq!(positions(&repo.list_logs(&no_filter, 2, 1).await.unwrap()), vec![(1, 4), (1, 3)]);
+
+        // address
+        let by_address = LogFilter { address: Some(vec![0xaa; 20]), ..Default::default() };
+        assert_eq!(repo.list_logs(&by_address, 100, 0).await.unwrap().len(), 6);
+        let other_address = LogFilter { address: Some(vec![0xbb; 20]), ..Default::default() };
+        assert!(repo.list_logs(&other_address, 100, 0).await.unwrap().is_empty());
+
+        // topics: block 1's log 3 has topic0..topic2
+        let log3 = b1.2.iter().find(|l| l.log_index == 3).unwrap();
+        let mut by_topics = LogFilter { topics: [log3.topic0.clone(), None, log3.topic2.clone(), None], ..Default::default() };
+        assert_eq!(positions(&repo.list_logs(&by_topics, 100, 0).await.unwrap()), vec![(1, 3)]);
+        by_topics.topics[2] = Some(vec![0u8; 32]);
+        assert!(repo.list_logs(&by_topics, 100, 0).await.unwrap().is_empty());
+
+        // block range, inclusive, combined with an address
+        let by_range = LogFilter { address: Some(vec![0xaa; 20]), from_block: Some(2), to_block: Some(2), ..Default::default() };
+        assert_eq!(positions(&repo.list_logs(&by_range, 100, 0).await.unwrap()), vec![(2, 0)]);
+        let up_to_one = LogFilter { to_block: Some(1), ..Default::default() };
+        assert_eq!(repo.list_logs(&up_to_one, 100, 0).await.unwrap().len(), 5);
     }
 }
 

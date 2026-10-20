@@ -247,6 +247,68 @@
           ]
         },
         {
+          "name": "List logs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 and logs, newest first', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d).to.be.an('array');",
+                  "    for (let i = 1; i < d.length; i++) {",
+                  "        pm.expect(d[i - 1].block_number).to.be.at.least(d[i].block_number);",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/indexer/logs?limit=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "indexer",
+                "logs"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "address",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "topic0",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "from_block",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "to_block",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
           "name": "Get block by number",
           "request": {
             "method": "GET",

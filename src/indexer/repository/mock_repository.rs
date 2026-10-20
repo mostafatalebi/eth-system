@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use crate::error::CoreError;
 use crate::indexer::models::block::BlockModel;
 use crate::indexer::models::log::LogModel;
-use crate::indexer::repository::repository::{BlockData, BlockRepository};
+use crate::indexer::repository::repository::{BlockData, BlockRepository, LogFilter};
 
 
 #[derive(Clone)]
@@ -45,6 +45,10 @@ impl MockRepository {
     fn drop_logs_of_missing_blocks(inner: &mut MockRepositoryInner) {
         let hashes: Vec<Vec<u8>> = inner.blocks.iter().map(|b| b.hash.clone()).collect();
         inner.logs.retain(|l| hashes.contains(&l.block_hash));
+    }
+
+    pub fn add_logs(&self, logs: Vec<LogModel>) {
+        self.inner.lock().unwrap().logs.extend(logs);
     }
 
     pub fn logs(&self) -> Vec<LogModel> {
@@ -103,6 +107,18 @@ impl BlockRepository for MockRepository {
         blocks.sort_by(|a, b| b.number.cmp(&a.number));
         Ok(blocks.into_iter().skip(offset as usize).take(limit as usize).collect())
     }
+    async fn list_logs(&self, filter: &LogFilter, limit: i64, offset: i64) -> Result<Vec<LogModel>, CoreError> {
+        let mut logs: Vec<LogModel> = self.inner.lock().unwrap().logs.iter().filter(|l| {
+            let topics = [&l.topic0, &l.topic1, &l.topic2, &l.topic3];
+            filter.address.as_ref().map_or(true, |a| &l.address == a)
+                && filter.topics.iter().zip(topics).all(|(wanted, actual)| wanted.is_none() || wanted == actual)
+                && filter.from_block.map_or(true, |from| l.block_number >= from)
+                && filter.to_block.map_or(true, |to| l.block_number <= to)
+        }).cloned().collect();
+        logs.sort_by(|a, b| (b.block_number, b.log_index).cmp(&(a.block_number, a.log_index)));
+        Ok(logs.into_iter().skip(offset as usize).take(limit as usize).collect())
+    }
+
     async fn replace_chain_above(&self, ancestor_number: i64, new_chain: &BlockData<'_>) -> Result<(), CoreError> {
         let mut inner = self.inner.lock().unwrap();
         inner.blocks.retain(|b| b.number <= ancestor_number);
