@@ -1,7 +1,7 @@
 use alloy::consensus::{Transaction as ConsensusTransaction, TxEnvelope};
 use alloy::eips::Typed2718;
 use alloy::network::TransactionResponse;
-use alloy::rpc::types::Transaction;
+use alloy::rpc::types::{Transaction, TransactionReceipt};
 use chrono::NaiveDateTime;
 use tokio_postgres::Row;
 use tokio_postgres::types::ToSql;
@@ -31,6 +31,13 @@ pub struct TransactionModel {
     pub r: Vec<u8>,
     pub s: Vec<u8>,
     pub y_parity: Option<bool>,
+    // from the transaction receipt; None until the receipt has been applied
+    pub receipt_status: Option<bool>,
+    pub receipt_gas_used: Option<i64>,
+    pub receipt_effective_gas_price: Option<String>,
+    pub receipt_contract_address: Option<Vec<u8>>,
+    pub receipt_blob_gas_used: Option<i64>,
+    pub receipt_blob_gas_price: Option<String>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -62,6 +69,12 @@ impl TransactionModel {
             r: row.get("r"),
             s: row.get("s"),
             y_parity: row.get("y_parity"),
+            receipt_status: row.get("receipt_status"),
+            receipt_gas_used: row.get("receipt_gas_used"),
+            receipt_effective_gas_price: row.get("receipt_effective_gas_price"),
+            receipt_contract_address: row.get("receipt_contract_address"),
+            receipt_blob_gas_used: row.get("receipt_blob_gas_used"),
+            receipt_blob_gas_price: row.get("receipt_blob_gas_price"),
 
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
@@ -127,9 +140,25 @@ impl TransactionModel {
             r: sig.r().to_be_bytes::<32>().to_vec(),
             s: sig.s().to_be_bytes::<32>().to_vec(),
             y_parity: Some(sig.v()),
+            receipt_status: None,
+            receipt_gas_used: None,
+            receipt_effective_gas_price: None,
+            receipt_contract_address: None,
+            receipt_blob_gas_used: None,
+            receipt_blob_gas_price: None,
             created_at: Default::default(),
             updated_at: Default::default(),
         })
+    }
+
+    /// fills in the fields that only the receipt knows
+    pub fn apply_receipt(&mut self, receipt: &TransactionReceipt) {
+        self.receipt_status = Some(receipt.status());
+        self.receipt_gas_used = Some(receipt.gas_used as i64);
+        self.receipt_effective_gas_price = Some(receipt.effective_gas_price.to_string());
+        self.receipt_contract_address = receipt.contract_address.map(|a| a.to_vec());
+        self.receipt_blob_gas_used = receipt.blob_gas_used.map(|g| g as i64);
+        self.receipt_blob_gas_price = receipt.blob_gas_price.map(|g| g.to_string());
     }
 
     /// values in the same order as the columns of the transactions insert query
@@ -157,6 +186,12 @@ impl TransactionModel {
         values.push(&self.r);
         values.push(&self.s);
         values.push(&self.y_parity);
+        values.push(&self.receipt_status);
+        values.push(&self.receipt_gas_used);
+        values.push(&self.receipt_effective_gas_price);
+        values.push(&self.receipt_contract_address);
+        values.push(&self.receipt_blob_gas_used);
+        values.push(&self.receipt_blob_gas_price);
         values
     }
 }

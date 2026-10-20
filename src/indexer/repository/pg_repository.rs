@@ -5,8 +5,9 @@ use tokio_postgres::types::ToSql;
 use crate::db::db::DbFactory;
 use crate::error::CoreError;
 use crate::indexer::models::block::BlockModel;
+use crate::indexer::models::log::LogModel;
 use crate::indexer::models::transaction::TransactionModel;
-use crate::indexer::repository::queries::{BLOCK_IS_FINALIZED_QUERY, BLOCK_MARK_FINALIZED_CHECKPOINT_QUERY, LAST_FINALIZED_CHECKPOINT_QUERY, BLOCK_INSERT_QUERY, TX_INSERT_QUERY};
+use crate::indexer::repository::queries::{BLOCK_IS_FINALIZED_QUERY, BLOCK_MARK_FINALIZED_CHECKPOINT_QUERY, LAST_FINALIZED_CHECKPOINT_QUERY, BLOCK_INSERT_QUERY, LOG_INSERT_QUERY, TX_INSERT_QUERY};
 use crate::indexer::repository::repository::{BlockData, BlockRepository};
 
 #[derive(Clone)]
@@ -59,17 +60,14 @@ impl BlockRepository for PgBlockRepository {
             .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
         let tx_stmt = tx.prepare(TX_INSERT_QUERY).await
             .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
-        for (block, block_transactions) in block_data.blocks.iter().zip(block_data.transactions.iter()) {
-            let mut res = self.upsert_single_block(&bck_stmt, &tx, block).await;
-            if res.is_err() {
+        let log_stmt = tx.prepare(LOG_INSERT_QUERY).await
+            .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
+        Self::check_block_data(block_data)?;
+        for (i, block) in block_data.blocks.iter().enumerate() {
+            let res = self.insert_block_with_children(&[&bck_stmt, &tx_stmt, &log_stmt], &tx, block, &block_data.transactions[i], &block_data.logs[i]).await;
+            if let Err(e) = res {
                 tx.rollback().await.map_err(|e| CoreError::DbTxRollbackFailed(pg_err_msg(&e)))?;
-                return Err(res.unwrap_err());
-            } else {
-                res = self.insert_transactions_of_a_block(&tx_stmt, &tx, &block, block_transactions).await;
-                if res.is_err() {
-                    tx.rollback().await.map_err(|e| CoreError::DbTxRollbackFailed(pg_err_msg(&e)))?;
-                    return Err(res.unwrap_err());
-                }
+                return Err(e);
             }
         }
 
@@ -173,10 +171,12 @@ impl BlockRepository for PgBlockRepository {
             .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
         let tx_stmt = tx.prepare(TX_INSERT_QUERY).await
             .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
+        let log_stmt = tx.prepare(LOG_INSERT_QUERY).await
+            .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
 
+        Self::check_block_data(new_chain)?;
         for (i, block) in new_chain.blocks.iter().enumerate() {
-            self.upsert_single_block(&stmt, &tx, block).await?;
-            self.insert_transactions_of_a_block(&tx_stmt, &tx, block, &new_chain.transactions[i]).await?;
+            self.insert_block_with_children(&[&stmt, &tx_stmt, &log_stmt], &tx, block, &new_chain.transactions[i], &new_chain.logs[i]).await?;
         }
 
         tx.commit().await
@@ -229,7 +229,8 @@ impl PgBlockRepository {
         Ok(row.get("number"))
     }
 
-    async fn upsert_single_block(&self, stmt: &Statement, pg_tx: &Transaction<'_>, block: &BlockModel) -> Result<(), CoreError> {
+    /// returns false if the very same block is already stored, true if it has been inserted
+    async fn upsert_single_block(&self, stmt: &Statement, pg_tx: &Transaction<'_>, block: &BlockModel) -> Result<bool, CoreError> {
             let existing = pg_tx.query_opt("select hash from blocks where number = $1", &[&block.number]).await
                 .map_err(|e| CoreError::DbQueryFailed(pg_err_msg(&e)))?;
             if let Some(row) = existing {
@@ -237,7 +238,7 @@ impl PgBlockRepository {
                 if existing_hash == block.hash {
                     // this ensures exactly same block cannot exist; and helps us to have a safe
                     // and simpler retry
-                    return Ok(());
+                    return Ok(false);
                 }
                 return Err(CoreError::DbDuplicateBlockWithDifferentHash(block.parent_hash.clone(), block.hash.clone(), existing_hash));
             }
@@ -248,6 +249,38 @@ impl PgBlockRepository {
                     Some(&SqlState::FOREIGN_KEY_VIOLATION) => CoreError::ParentHashMismatch(block.hash.clone()),
                     _ => CoreError::DbInsertFailed(pg_err_msg(&e)),
                 })?;
+        Ok(true)
+    }
+
+    /// inserts a block, then its transactions, then its logs; `statements` are the prepared
+    /// block, transaction and log inserts, in that order
+    async fn insert_block_with_children(&self, statements: &[&Statement; 3], pg_tx: &Transaction<'_>, block: &BlockModel,
+                                        transactions: &Vec<TransactionModel>, logs: &Vec<LogModel>) -> Result<(), CoreError> {
+        // a block that is already stored has been stored with its transactions and logs
+        if !self.upsert_single_block(statements[0], pg_tx, block).await? {
+            return Ok(());
+        }
+        self.insert_transactions_of_a_block(statements[1], pg_tx, block, transactions).await?;
+        self.insert_logs_of_a_block(statements[2], pg_tx, block, logs).await
+    }
+
+    fn check_block_data(block_data: &BlockData<'_>) -> Result<(), CoreError> {
+        if block_data.transactions.len() != block_data.blocks.len() || block_data.logs.len() != block_data.blocks.len() {
+            return Err(CoreError::BadArgument(format!(
+                "{} blocks but {} transaction lists and {} log lists", block_data.blocks.len(), block_data.transactions.len(), block_data.logs.len())));
+        }
+        Ok(())
+    }
+
+    async fn insert_logs_of_a_block(&self, stmt: &Statement, pg_tx: &Transaction<'_>, block: &BlockModel, logs: &Vec<LogModel>) -> Result<(), CoreError> {
+        for log in logs {
+            if log.block_hash != block.hash {
+                return Err(CoreError::BadArgument(format!(
+                    "log {} of transaction 0x{} does not belong to block {:?}", log.log_index, alloy::hex::encode(&log.tx_hash), block.hash)));
+            }
+            pg_tx.execute(stmt, log.get_prepared_values().as_slice()).await
+                .map_err(|e| CoreError::DbTxExecFailed(pg_err_msg(&e)))?;
+        }
         Ok(())
     }
 
@@ -272,7 +305,9 @@ mod tests {
     use crate::config::config::Config;
     use crate::db::db::DbType::Postgres;
     use crate::db::test_support::DB_LOCK;
-    use crate::indexer::types::mocks::{mock_block_with_parent, mock_blocks_list};
+    use crate::indexer::clients::eth_mock::EthereumMockClient;
+    use crate::indexer::models::log::LogModel;
+    use crate::indexer::types::mocks::{mock_block_with_parent, mock_block_with_receipts, mock_blocks_list};
 
     async fn setup() -> (PgBlockRepository, Arc<DbFactory>, tokio::sync::MutexGuard<'static, ()>) {
         let guard = DB_LOCK.lock().await;
@@ -293,7 +328,8 @@ mod tests {
     async fn insert_blocks(repo: &PgBlockRepository, blocks: &[Block]) -> Result<(), CoreError> {
         let models: Vec<BlockModel> = blocks.iter().map(|b| BlockModel::new_from_rpc_block(b).unwrap()).collect();
         let transactions = vec![vec![]; models.len()];
-        repo.upsert_blocks(&BlockData::new(&models, &transactions)).await
+        let logs = vec![vec![]; models.len()];
+        repo.upsert_blocks(&BlockData::new(&models, &transactions, &logs)).await
     }
 
     async fn stored_hashes(db: &DbFactory) -> Vec<Vec<u8>> {
@@ -394,7 +430,7 @@ mod tests {
         let new_3 = mock_block_with_parent(3, stored[1].header.hash);
         let models = vec![BlockModel::new_from_rpc_block(&new_3).unwrap()];
 
-        repo.replace_chain_above(2, &BlockData::new(&models, &vec![vec![]])).await.unwrap();
+        repo.replace_chain_above(2, &BlockData::new(&models, &vec![vec![]], &vec![vec![]])).await.unwrap();
 
         assert_eq!(stored_hashes(&db).await, vec![
             stored[0].header.hash.to_vec(),
@@ -451,4 +487,132 @@ mod tests {
 
         assert_eq!(repo.last_finalized_checkpoint().await.unwrap(), Some(2));
     }
+
+    // blocks with transactions and logs
+
+    type Parts = (BlockModel, Vec<TransactionModel>, Vec<LogModel>);
+
+    /// the models of a block holding one transaction per entry of `logs_per_tx`, each with that many logs
+    fn parts(number: u64, parent_hash: B256, logs_per_tx: &[usize]) -> (Parts, B256) {
+        let (block, receipts) = mock_block_with_receipts(number, parent_hash, logs_per_tx);
+        let hash = block.header.hash;
+        let fetched = crate::indexer::fetcher::FetchedBlock { block, receipts };
+        let models = crate::indexer::fetcher::FetcherInner::<PgBlockRepository, EthereumMockClient>::models_of_block(&fetched).unwrap();
+        (models, hash)
+    }
+
+    fn block_data_of<'a>(parts: &'a [Parts], blocks: &'a mut Vec<BlockModel>, txs: &'a mut Vec<Vec<TransactionModel>>, logs: &'a mut Vec<Vec<LogModel>>) -> BlockData<'a> {
+        for (b, t, l) in parts {
+            blocks.push(b.clone());
+            txs.push(t.clone());
+            logs.push(l.clone());
+        }
+        BlockData::new(blocks, txs, logs)
+    }
+
+    async fn upsert_parts(repo: &PgBlockRepository, parts: &[Parts]) -> Result<(), CoreError> {
+        let (mut blocks, mut txs, mut logs) = (vec![], vec![], vec![]);
+        repo.upsert_blocks(&block_data_of(parts, &mut blocks, &mut txs, &mut logs)).await
+    }
+
+    async fn count(db: &DbFactory, table: &str) -> i64 {
+        let client = db.pg().await.unwrap();
+        client.query_one(&format!("select count(*) as count from {}", table), &[]).await.unwrap().get("count")
+    }
+
+    #[tokio::test]
+    async fn test_logs_and_receipt_data_are_stored_with_the_block() {
+        let (repo, db, _lock) = setup().await;
+        let (block, _) = parts(1, B256::random(), &[2, 0, 3]);
+
+        upsert_parts(&repo, &[block]).await.unwrap();
+
+        assert_eq!(count(&db, "transactions").await, 3);
+        assert_eq!(count(&db, "logs").await, 5);
+        let client = db.pg().await.unwrap();
+        let rows = client.query("select log_index, topic0, topic1, topic2, topic3 from logs order by log_index", &[]).await.unwrap();
+        // log i has i topics, so unused topic slots are NULL
+        for row in &rows {
+            let log_index: i32 = row.get("log_index");
+            let topics: Vec<Option<Vec<u8>>> = vec![row.get("topic0"), row.get("topic1"), row.get("topic2"), row.get("topic3")];
+            assert_eq!(topics.iter().filter(|t| t.is_some()).count() as i32, log_index);
+        }
+        let row = client.query_one("select receipt_status, receipt_gas_used, receipt_effective_gas_price::text as price, receipt_contract_address, receipt_blob_gas_used from transactions limit 1", &[]).await.unwrap();
+        assert_eq!(row.get::<_, Option<bool>>("receipt_status"), Some(true));
+        assert_eq!(row.get::<_, Option<i64>>("receipt_gas_used"), Some(21_000));
+        assert_eq!(row.get::<_, Option<String>>("price"), Some("1000000000".to_string()));
+        assert_eq!(row.get::<_, Option<Vec<u8>>>("receipt_contract_address"), None);
+        assert_eq!(row.get::<_, Option<i64>>("receipt_blob_gas_used"), None);
+    }
+
+    // a block that is already stored is skipped together with its transactions and logs
+    #[tokio::test]
+    async fn test_storing_the_same_block_again_does_not_duplicate_its_children() {
+        let (repo, db, _lock) = setup().await;
+        let (block, _) = parts(1, B256::random(), &[2, 1]);
+
+        upsert_parts(&repo, &[block.clone()]).await.unwrap();
+        upsert_parts(&repo, &[block]).await.unwrap();
+
+        assert_eq!(count(&db, "blocks").await, 1);
+        assert_eq!(count(&db, "transactions").await, 2);
+        assert_eq!(count(&db, "logs").await, 3);
+    }
+
+    // the logs of a replaced block go with it: this is the foreign key cascade, with real rows
+    #[tokio::test]
+    async fn test_replace_chain_above_deletes_the_logs_of_replaced_blocks() {
+        let (repo, db, _lock) = setup().await;
+        let (b1, h1) = parts(1, B256::random(), &[1]);
+        let (b2, h2) = parts(2, h1, &[2]);
+        let (b3, _) = parts(3, h2, &[3]);
+        upsert_parts(&repo, &[b1.clone(), b2.clone(), b3.clone()]).await.unwrap();
+        assert_eq!(count(&db, "logs").await, 6);
+
+        let (new_2, _) = parts(2, h1, &[4]);
+        let (mut blocks, mut txs, mut logs) = (vec![], vec![], vec![]);
+        repo.replace_chain_above(1, &block_data_of(&[new_2.clone()], &mut blocks, &mut txs, &mut logs)).await.unwrap();
+
+        let client = db.pg().await.unwrap();
+        let old_hashes = vec![b2.0.hash.clone(), b3.0.hash.clone()];
+        let stale: i64 = client.query_one("select count(*) as count from logs where block_hash = any($1)", &[&old_hashes]).await.unwrap().get("count");
+        assert_eq!(stale, 0);
+        assert_eq!(count(&db, "logs").await, 1 + 4);
+        assert_eq!(count(&db, "transactions").await, 1 + 1);
+    }
+
+    #[tokio::test]
+    async fn test_delete_block_cascading_deletes_the_logs() {
+        let (repo, db, _lock) = setup().await;
+        let (b1, h1) = parts(1, B256::random(), &[1]);
+        let (b2, _) = parts(2, h1, &[2]);
+        upsert_parts(&repo, &[b1.clone(), b2.clone()]).await.unwrap();
+
+        repo.delete_block_cascading(b2.0.hash.clone(), b2.0.hash.clone()).await.unwrap();
+
+        assert_eq!(count(&db, "logs").await, 1);
+    }
+
+    // a log that belongs to another block makes the whole write fail, leaving nothing behind
+    #[tokio::test]
+    async fn test_log_of_another_block_is_rejected_and_nothing_is_stored() {
+        let (repo, db, _lock) = setup().await;
+        let (mut block, _) = parts(1, B256::random(), &[2]);
+        block.2[1].block_hash = vec![9u8; 32];
+
+        let res = upsert_parts(&repo, &[block]).await;
+
+        assert!(matches!(res, Err(CoreError::BadArgument(_))));
+        assert_eq!(count(&db, "blocks").await, 0);
+        assert_eq!(count(&db, "logs").await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_mismatched_block_data_lists_are_rejected() {
+        let (repo, _db, _lock) = setup().await;
+        let (block, _) = parts(1, B256::random(), &[1]);
+        let res = repo.upsert_blocks(&BlockData::new(&vec![block.0], &vec![block.1], &vec![])).await;
+        assert!(matches!(res, Err(CoreError::BadArgument(_))));
+    }
 }
+

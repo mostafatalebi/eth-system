@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use crate::error::CoreError;
 use crate::indexer::models::block::BlockModel;
+use crate::indexer::models::log::LogModel;
 use crate::indexer::repository::repository::{BlockData, BlockRepository};
 
 
@@ -13,6 +14,7 @@ pub struct MockRepository {
 
 pub struct MockRepositoryInner {
     blocks: Vec<BlockModel>,
+    logs: Vec<LogModel>,
     expected_upsert_error: Option<CoreError>,
 }
 
@@ -22,6 +24,7 @@ impl MockRepository {
         Self {
             inner: Arc::new(Mutex::new(MockRepositoryInner{
             blocks: vec![],
+            logs: vec![],
             expected_upsert_error: None})),
         }
     }
@@ -38,6 +41,16 @@ impl MockRepository {
         self.inner.lock().unwrap().blocks.extend(blocks);
     }
 
+    /// what the foreign key cascade does in the database
+    fn drop_logs_of_missing_blocks(inner: &mut MockRepositoryInner) {
+        let hashes: Vec<Vec<u8>> = inner.blocks.iter().map(|b| b.hash.clone()).collect();
+        inner.logs.retain(|l| hashes.contains(&l.block_hash));
+    }
+
+    pub fn logs(&self) -> Vec<LogModel> {
+        self.inner.lock().unwrap().logs.clone()
+    }
+
     pub fn block_hashes(&self) -> Vec<Vec<u8>> {
         self.inner.lock().unwrap().blocks.iter().map(|b| b.hash.clone()).collect()
     }
@@ -49,8 +62,10 @@ impl BlockRepository for MockRepository {
         if self.inner.lock().unwrap().expected_upsert_error.is_some() {
             return Err(self.inner.lock().unwrap().expected_upsert_error.take().unwrap());
         }
-        for b in blocks.blocks.iter() {
-            self.inner.lock().unwrap().blocks.push(b.clone())
+        let mut inner = self.inner.lock().unwrap();
+        for (i, b) in blocks.blocks.iter().enumerate() {
+            inner.blocks.push(b.clone());
+            inner.logs.extend(blocks.logs[i].iter().cloned());
         }
         Ok(())
     }
@@ -64,6 +79,7 @@ impl BlockRepository for MockRepository {
         // tolerate swapped arguments: always delete the range between the two
         let (from_number, to_number) = (oldest_number.min(newest_number), oldest_number.max(newest_number));
         inner.blocks.retain(|b| b.number < from_number || b.number > to_number);
+        Self::drop_logs_of_missing_blocks(&mut inner);
         Ok(())
     }
 
@@ -90,7 +106,11 @@ impl BlockRepository for MockRepository {
     async fn replace_chain_above(&self, ancestor_number: i64, new_chain: &BlockData<'_>) -> Result<(), CoreError> {
         let mut inner = self.inner.lock().unwrap();
         inner.blocks.retain(|b| b.number <= ancestor_number);
-        inner.blocks.extend(new_chain.blocks.iter().cloned());
+        Self::drop_logs_of_missing_blocks(&mut inner);
+        for (i, b) in new_chain.blocks.iter().enumerate() {
+            inner.blocks.push(b.clone());
+            inner.logs.extend(new_chain.logs[i].iter().cloned());
+        }
         Ok(())
     }
 

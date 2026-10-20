@@ -45,6 +45,8 @@ pub enum CoreError {
     BlockNumberUnexpected(u64, u64),
     ParentBlockNotFound(Vec<u8>),
     ReorgBelowFinalized(u64),
+    /// the receipts fetched for a block do not match its transactions
+    ReceiptsInvalid(String),
     ParentHashMismatch(Vec<u8>),
     UserAlreadyExists(String),
     PasswordHashFailed(String),
@@ -104,6 +106,7 @@ impl fmt::Display for CoreError {
                 let p = String::from_utf8_lossy(p);
                 write!(f, "block search by parent_hash={p} yielded no result")
             }
+            CoreError::ReceiptsInvalid(msg) => write!(f, "invalid receipts: {msg}"),
             CoreError::ReorgBelowFinalized(n) => write!(f, "reorg reaches finalized block {n}: database is on a different chain"),
             CoreError::UserAlreadyExists(u) => write!(f, "user already exists: {u}"),
             CoreError::PasswordHashFailed(msg) => write!(f, "failed to hash password: {msg}"),

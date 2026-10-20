@@ -1,6 +1,7 @@
 use std::future::Future;
 use crate::error::CoreError;
 use crate::indexer::models::block::BlockModel;
+use crate::indexer::models::log::LogModel;
 use crate::indexer::models::transaction::TransactionModel;
 
 /// methods return `impl Future + Send` instead of using `async fn`, so that generic
@@ -32,13 +33,16 @@ pub trait BlockRepository: Send + Sync + 'static {
 pub struct BlockData<'a> {
     pub blocks: &'a Vec<BlockModel>,
     pub transactions: &'a Vec<Vec<TransactionModel>>,
+    /// logs[i] are the logs of blocks[i]
+    pub logs: &'a Vec<Vec<LogModel>>,
 }
 
 impl<'a> BlockData<'a> {
-    pub fn new(blocks: &'a Vec<BlockModel>, transactions: &'a Vec<Vec<TransactionModel>>) -> Self {
+    pub fn new(blocks: &'a Vec<BlockModel>, transactions: &'a Vec<Vec<TransactionModel>>, logs: &'a Vec<Vec<LogModel>>) -> Self {
         Self {
             blocks,
             transactions,
+            logs,
         }
     }
 }

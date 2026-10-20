@@ -1,15 +1,22 @@
 use std::sync::Arc;
 use std::time::Duration;
 use alloy::primitives::B256;
-use alloy::rpc::types::{Block, BlockTransactions};
+use alloy::rpc::types::{Block, BlockTransactions, TransactionReceipt};
 use tokio::sync::mpsc::Receiver;
 use tracing::{error, info};
 use crate::error::CoreError;
 use crate::indexer::clients::eth::EthClient;
 use crate::indexer::models::block::BlockModel;
+use crate::indexer::models::log::LogModel;
 use crate::indexer::models::transaction::TransactionModel;
 use crate::indexer::repository::repository::{BlockData, BlockRepository};
 use crate::indexer::validator::block_validator::BlockValidator;
+
+/// a block together with the receipts of its transactions, as the fetcher hands it to the processor
+pub struct FetchedBlock {
+    pub block: Block,
+    pub receipts: Vec<TransactionReceipt>,
+}
 
 pub struct FetchConfig {
     ws_url: String,
@@ -57,7 +64,7 @@ impl<R: BlockRepository, C: EthClient> Fetcher<R, C> {
     }
 
     #[cfg(test)]
-    pub async fn listen_to_incoming_blocks(&self, in_chan: Receiver<Block>) -> Result<(), CoreError> {
+    pub async fn listen_to_incoming_blocks(&self, in_chan: Receiver<FetchedBlock>) -> Result<(), CoreError> {
         self.inner.block_processor(None, in_chan).await
     }
 }
@@ -89,19 +96,19 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
     /// network. It then publishes the retrieved blocks into an outgoing chan
     /// defined in FetchConfig
     /// It returns last processed block number
-    pub async fn block_fetcher(&self, start_block: Option<u64>, out_chan: tokio::sync::mpsc::Sender<Block>) -> Result<u64,CoreError> {
+    pub async fn block_fetcher(&self, start_block: Option<u64>, out_chan: tokio::sync::mpsc::Sender<FetchedBlock>) -> Result<u64,CoreError> {
         info!("starting block fetcher");
         let last_block_number = start_block;
         let blocks = self.client.get_blocks(last_block_number, self.config.rpc_fetch_batch_size).await?;
         let num_of_fetched_blocks = blocks.len();
 
+        // receipts of the whole batch are fetched and validated before anything is sent, so a failure
+        // makes the caller retry the batch without the processor having received part of it
+        let fetched = futures::future::try_join_all(blocks.into_iter().flatten().map(|b| self.fetch_receipts(b))).await?;
+
         // @todo this is happy case; we need to add failure handling
-        for block in blocks {
-            if block.is_none() {
-                // non-existing block
-                continue
-            }
-            let res = out_chan.send(block.unwrap()).await;
+        for fetched_block in fetched {
+            let res = out_chan.send(fetched_block).await;
             if res.is_err() {
                 return Err(CoreError::Internal(Box::new(res.err().unwrap())));
             }
@@ -110,39 +117,44 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
         Ok(last_block_number.unwrap()+num_of_fetched_blocks as u64)
     }
 
-    pub async fn block_processor(&self, start_block_number: Option<u64>, mut in_chan: Receiver<Block>) -> Result<(), CoreError> {
+    /// fetches the receipts of the block and checks they match its transactions
+    async fn fetch_receipts(&self, block: Block) -> Result<FetchedBlock, CoreError> {
+        let receipts = self.client.get_block_receipts(block.header.hash).await?;
+        BlockValidator::validate_receipts(&block, &receipts)?;
+        Ok(FetchedBlock { block, receipts })
+    }
+
+    pub async fn block_processor(&self, start_block_number: Option<u64>, mut in_chan: Receiver<FetchedBlock>) -> Result<(), CoreError> {
         info!("starting indexer block processor");
         let mut block_models_list = Vec::new();
         let mut transactions_list: Vec<Vec<TransactionModel>> = Vec::new();
+        let mut logs_list: Vec<Vec<LogModel>> = Vec::new();
         // number of the block that must come next; None until the first block arrives
         let mut expected_block_number = start_block_number;
         loop {
             tokio::select! {
-                Some(block) = in_chan.recv() => {
-                    let err = BlockValidator::validate_rpc_block(&block, expected_block_number);
+                Some(fetched) = in_chan.recv() => {
+                    let block = &fetched.block;
+                    let err = BlockValidator::validate_rpc_block(block, expected_block_number);
                     if err.is_err() {
                         // @todo though this is weird
                         error!("block validation error: {:?}", err);
                     }
-                    let block_model = BlockModel::new_from_rpc_block(&block);
-                    if block_model.is_err() {
-                        error!("block model error, cannot continue: {:?}", block_model);
-                        return block_model.map(|_| ());
+                    let models = Self::models_of_block(&fetched);
+                    if models.is_err() {
+                        error!("block model error, cannot continue: {:?}", models);
+                        return models.map(|_| ());
                     }
+                    let (block_model, transaction_models, log_models) = models?;
 
-                    let transaction_models = Self::transaction_models_of_block(&block);
-                    if transaction_models.is_err() {
-                        error!("transaction model error, cannot continue: {:?}", transaction_models);
-                        return transaction_models.map(|_| ());
-                    }
-
-                    block_models_list.push(block_model.unwrap());
-                    transactions_list.push(transaction_models?);
+                    block_models_list.push(block_model);
+                    transactions_list.push(transaction_models);
+                    logs_list.push(log_models);
                     expected_block_number = Some(block.header.number + 1);
                     let mut must_persist = true;
                     while must_persist {
                         if block_models_list.len() == self.config.db_persistence_batch_size {
-                            let res = self.repo.upsert_blocks(&BlockData::new(&block_models_list, &transactions_list)).await;
+                            let res = self.repo.upsert_blocks(&BlockData::new(&block_models_list, &transactions_list, &logs_list)).await;
                             if let Err(CoreError::DbDuplicateBlockWithDifferentHash(_, incoming_hash, _)) = &res {
                                 let conflicting = block_models_list.iter().find(|b| &b.hash == incoming_hash).cloned()
                                     .ok_or(CoreError::BadArgument("conflicting block is not in the batch".to_string()))?;
@@ -151,11 +163,14 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
 
                                 let mut blocks = Vec::new();
                                 let mut txs = Vec::new();
-                                for b in &new_blocks {
-                                    blocks.push(BlockModel::new_from_rpc_block(b)?);
-                                    txs.push(Self::transaction_models_of_block(b)?);
+                                let mut logs = Vec::new();
+                                for fetched_block in &new_blocks {
+                                    let (block_model, transaction_models, log_models) = Self::models_of_block(fetched_block)?;
+                                    blocks.push(block_model);
+                                    txs.push(transaction_models);
+                                    logs.push(log_models);
                                 }
-                                self.repo.replace_chain_above(ancestor, &BlockData::new(&blocks, &txs)).await?;
+                                self.repo.replace_chain_above(ancestor, &BlockData::new(&blocks, &txs, &logs)).await?;
                                 continue;
                             } else if res.as_ref().is_err() {
                                 error!("error on upserting blocks: {:?}", res);
@@ -166,6 +181,7 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
                             must_persist = false;
                             block_models_list.truncate(0);
                             transactions_list.truncate(0);
+                            logs_list.truncate(0);
                         } else {
                             break
                         }
@@ -174,7 +190,7 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
 
                 _ = self.cancellation.cancelled() => {
                     if block_models_list.len() > 0 {
-                            let res = self.repo.upsert_blocks(&BlockData::new(&block_models_list, &transactions_list)).await;
+                            let res = self.repo.upsert_blocks(&BlockData::new(&block_models_list, &transactions_list, &logs_list)).await;
                             if res.is_err() {
                                 error!("error on upserting blocks: {:?}", res);
                                 // must retry
@@ -183,6 +199,7 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
                             }
                             block_models_list.truncate(0);
                             transactions_list.truncate(0);
+                            logs_list.truncate(0);
                     }
                     return Ok(());
                 }
@@ -190,7 +207,7 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
         }
     }
 
-    async fn find_common_ancestor(&self, conflicting: &BlockModel) -> Result<(i64, Vec<Block>), CoreError> {
+    async fn find_common_ancestor(&self, conflicting: &BlockModel) -> Result<(i64, Vec<FetchedBlock>), CoreError> {
         let finalized = self.client.get_last_finalized_block().await?
             .map(|b| b.header.number as i64)
             .unwrap_or(0);
@@ -208,8 +225,27 @@ impl<'a, R: BlockRepository, C: EthClient> FetcherInner<R, C> {
                 return Err(CoreError::ReorgBelowFinalized(block.header.number));
             }
             parent_hash = block.header.parent_hash.to_vec();
-            new_chain.push(block);
+            new_chain.push(self.fetch_receipts(block).await?);
         }
+    }
+
+    /// builds the models to persist for a block: the block row, its transactions (completed with the
+    /// data of their receipts) and its logs. The receipts must have been validated against the block
+    pub(crate) fn models_of_block(fetched: &FetchedBlock) -> Result<(BlockModel, Vec<TransactionModel>, Vec<LogModel>), CoreError> {
+        let block_model = BlockModel::new_from_rpc_block(&fetched.block)?;
+        let mut transaction_models = Self::transaction_models_of_block(&fetched.block)?;
+        if transaction_models.len() != fetched.receipts.len() {
+            return Err(CoreError::ReceiptsInvalid(format!(
+                "block {} has {} transactions but {} receipts", fetched.block.header.number, transaction_models.len(), fetched.receipts.len())));
+        }
+        for (transaction, receipt) in transaction_models.iter_mut().zip(fetched.receipts.iter()) {
+            transaction.apply_receipt(receipt);
+        }
+        let log_models = fetched.receipts.iter()
+            .flat_map(|receipt| receipt.inner.logs())
+            .map(LogModel::new_from_rpc_log)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((block_model, transaction_models, log_models))
     }
 
     /// builds the transaction models of a block. Blocks must be fetched with full
@@ -234,7 +270,82 @@ mod tests {
     use crate::db::db::DbFactory;
     use crate::indexer::clients::eth_mock::EthereumMockClient;
     use crate::indexer::repository::mock_repository::MockRepository;
-    use crate::indexer::types::mocks::{mock_block_with_parent, mock_blocks_list};
+    use crate::indexer::types::mocks::{mock_block_with_parent, mock_block_with_receipts, mock_blocks_list};
+
+    type TestFetcherInner = FetcherInner<MockRepository, EthereumMockClient>;
+
+    // the models of a block carry the data of its receipts: receipt columns on the transactions and one log row per log
+    #[test]
+    fn test_models_of_block_merge_receipts_and_flatten_logs() {
+        let (block, receipts) = mock_block_with_receipts(7, B256::random(), &[2, 0, 3]);
+        let tx_hashes: Vec<Vec<u8>> = receipts.iter().map(|r| r.transaction_hash.to_vec()).collect();
+
+        let (block_model, transactions, logs) = TestFetcherInner::models_of_block(&FetchedBlock { block, receipts }).unwrap();
+
+        assert_eq!(block_model.number, 7);
+        assert_eq!(transactions.len(), 3);
+        for transaction in &transactions {
+            assert_eq!(transaction.receipt_status, Some(true));
+            assert_eq!(transaction.receipt_gas_used, Some(21_000));
+            assert_eq!(transaction.receipt_effective_gas_price.as_deref(), Some("1000000000"));
+            assert_eq!(transaction.receipt_contract_address, None);
+        }
+        // 2 + 0 + 3 logs, numbered across the block, each pointing at the transaction that emitted it
+        assert_eq!(logs.iter().map(|l| l.log_index).collect::<Vec<_>>(), vec![0, 1, 2, 3, 4]);
+        let owners: Vec<&Vec<u8>> = logs.iter().map(|l| &l.tx_hash).collect();
+        assert_eq!(owners, vec![&tx_hashes[0], &tx_hashes[0], &tx_hashes[2], &tx_hashes[2], &tx_hashes[2]]);
+        assert!(logs.iter().all(|l| l.block_hash == block_model.hash && l.block_number == 7));
+    }
+
+    #[test]
+    fn test_models_of_block_rejects_receipts_that_do_not_match_the_transactions() {
+        let (block, mut receipts) = mock_block_with_receipts(7, B256::random(), &[1, 1]);
+        receipts.pop();
+        let res = TestFetcherInner::models_of_block(&FetchedBlock { block, receipts });
+        assert!(matches!(res, Err(CoreError::ReceiptsInvalid(_))));
+    }
+
+    // the processor persists the logs of the blocks it receives
+    #[tokio::test]
+    async fn test_processor_persists_logs() {
+        let (block, receipts) = mock_block_with_receipts(1, B256::random(), &[2, 1]);
+        let repo = MockRepository::new();
+        let mut config = FetchConfig::new();
+        config.db_persistence_batch_size = 1;
+        let fetcher = Fetcher::new(config, repo.clone(), EthereumMockClient::new(), tokio_util::sync::CancellationToken::new());
+        let (sn, rc) = tokio::sync::mpsc::channel(10);
+        let inner = fetcher.inner.clone();
+        let handle = tokio::spawn(async move { inner.block_processor(None, rc).await });
+        sn.send(FetchedBlock { block, receipts }).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while repo.len_blocks() < 1 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("block was not persisted");
+        fetcher.inner.cancellation.cancel();
+        handle.await.unwrap().unwrap();
+
+        assert_eq!(repo.logs().len(), 3);
+    }
+
+    // a batch whose receipts do not match its block is not sent on; the caller retries it
+    #[tokio::test]
+    async fn test_block_fetcher_rejects_a_batch_with_mismatched_receipts() {
+        let (block, mut receipts) = mock_block_with_receipts(1, B256::random(), &[1, 1]);
+        receipts.pop();
+        let mut client = EthereumMockClient::new();
+        client.set_response(Ok(vec![Some(block)]));
+        client.set_receipts(receipts);
+        let mut config = FetchConfig::new();
+        config.set_batch_size(1);
+        let fetcher = Fetcher::new(config, MockRepository::new(), client, tokio_util::sync::CancellationToken::new());
+        let (sn, mut rc) = tokio::sync::mpsc::channel(10);
+
+        let res = fetcher.inner.block_fetcher(Some(1), sn).await;
+
+        assert!(matches!(res, Err(CoreError::ReceiptsInvalid(_))));
+        assert!(rc.try_recv().is_err(), "nothing must be sent");
+    }
 
     #[tokio::test]
     pub async fn test_fetching_blocks() {
@@ -315,7 +426,7 @@ mod tests {
         let (ancestor, new_chain) = fetcher.inner.find_common_ancestor(&model(&new_5)).await.unwrap();
 
         assert_eq!(ancestor, 2);
-        let hashes: Vec<B256> = new_chain.iter().map(|b| b.header.hash).collect();
+        let hashes: Vec<B256> = new_chain.iter().map(|b| b.block.header.hash).collect();
         assert_eq!(hashes, vec![new_3.header.hash, new_4.header.hash]);
     }
 
@@ -363,7 +474,7 @@ mod tests {
         let inner = fetcher.inner.clone();
         let handle = tokio::spawn(async move { inner.block_processor(None, rc).await });
         for block in &new_chain {
-            sn.send(block.clone()).await.unwrap();
+            sn.send(FetchedBlock { block: block.clone(), receipts: vec![] }).await.unwrap();
         }
         tokio::time::timeout(Duration::from_secs(2), async {
             while repo.len_blocks() < 9 {

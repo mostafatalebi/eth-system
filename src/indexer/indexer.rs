@@ -1,10 +1,9 @@
-use alloy::rpc::types::Block;
 use tokio::join;
 use tokio::time::{sleep};
 use tracing::error;
 use crate::error::CoreError;
 use crate::indexer::clients::eth::EthClient;
-use crate::indexer::fetcher::Fetcher;
+use crate::indexer::fetcher::{FetchedBlock, Fetcher};
 use crate::indexer::repository::repository::BlockRepository;
 
 pub struct Indexer<B: BlockRepository, C: EthClient> {
@@ -19,13 +18,13 @@ impl<B: BlockRepository, C: EthClient> Indexer<B, C> {
         }
     }
 
-    pub async fn start_workers(&mut self, start_block_number: Option<u64>, out_chan: tokio::sync::mpsc::Sender<Block>, in_chan: tokio::sync::mpsc::Receiver<Block>) {
+    pub async fn start_workers(&mut self, start_block_number: Option<u64>, out_chan: tokio::sync::mpsc::Sender<FetchedBlock>, in_chan: tokio::sync::mpsc::Receiver<FetchedBlock>) {
         _ = join!(
             self.fetcher.inner.block_processor(start_block_number, in_chan),
             self.rpc_workers(start_block_number, out_chan),
         );
     }
-    pub async fn rpc_workers(&self, start_block_number: Option<u64>,out_chan: tokio::sync::mpsc::Sender<Block>) -> Result<(), CoreError> {
+    pub async fn rpc_workers(&self, start_block_number: Option<u64>,out_chan: tokio::sync::mpsc::Sender<FetchedBlock>) -> Result<(), CoreError> {
         let mut retry_sec = 1u64;
         let interval_stop_dur = 1u64;
         let mut start_block_number = start_block_number;
